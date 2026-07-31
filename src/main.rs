@@ -160,7 +160,7 @@ fn main() -> ExitCode {
 
     // Audio: cpal pulls from a shared queue fed by the emulator.
     let audio_queue: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
-    let _stream = cpal::default_host().default_output_device().map(|dev| {
+    let stream = cpal::default_host().default_output_device().map(|dev| {
         let config = cpal::StreamConfig {
             channels: 2,
             sample_rate: 44100u32.into(),
@@ -189,6 +189,7 @@ fn main() -> ExitCode {
             s
         })
     });
+    let audio_ok = matches!(&stream, Some(Ok(_)));
 
     let mut window = Window::new(
         "gba",
@@ -205,9 +206,14 @@ fn main() -> ExitCode {
         // holds ~100ms, so playback never starves and A/V stay locked to
         // the same clock. At most a few frames per display refresh.
         let target = 44100 * 2 / 10;
-        for _ in 0..4 {
+        for i in 0..4 {
+            // Without audio output the queue never drains; fall back to one
+            // frame per display refresh.
+            if !audio_ok && i > 0 {
+                break;
+            }
             let queued = audio_queue.lock().unwrap().len();
-            if queued + cpu.bus.audio.len() >= target {
+            if audio_ok && queued + cpu.bus.audio.len() >= target {
                 break;
             }
             let mut cycles = 0u64;
