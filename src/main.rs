@@ -1,58 +1,112 @@
 mod bus;
 mod cpu;
+mod ppu;
 
+use minifb::{Key, Scale, Window, WindowOptions};
 use std::env;
 use std::process::ExitCode;
 
-/// Render the mode-4 frame (8bpp paletted bitmap) as a PPM. jsmolka's test
-/// ROMs draw PASS/FAIL text in this mode.
-fn dump_mode4(b: &bus::Bus, path: &str) {
-    let mut out = String::from("P3\n240 160\n255\n");
-    for i in 0..240 * 160 {
-        let pi = b.vram[i] as usize * 2;
-        let c = u16::from_le_bytes([b.palette[pi], b.palette[pi + 1]]);
-        let r = (c & 0x1F) << 3;
-        let g = (c >> 5 & 0x1F) << 3;
-        let bl = (c >> 10 & 0x1F) << 3;
-        out += &format!("{r} {g} {bl}\n");
+fn dump_frame(fb: &[u32], path: &str) {
+    let mut out = format!("P3\n{} {}\n255\n", ppu::WIDTH, ppu::HEIGHT);
+    for px in fb {
+        out += &format!("{} {} {}\n", px >> 16 & 0xFF, px >> 8 & 0xFF, px & 0xFF);
     }
     std::fs::write(path, out).unwrap();
 }
 
 fn main() -> ExitCode {
     let Some(rom_path) = env::args().nth(1) else {
-        eprintln!("usage: gba <rom.gba>");
+        eprintln!("usage: gba <rom.gba> [--headless]");
         return ExitCode::FAILURE;
     };
+    let headless = env::args().any(|a| a == "--headless");
     let rom = std::fs::read(&rom_path).expect("failed to read ROM");
-    let mut cpu = cpu::Cpu::new(bus::Bus::new(rom));
-
-    let steps: u64 = env::var("GBA_STEPS").ok().and_then(|v| v.parse().ok()).unwrap_or(5_000_000);
-    let mut ring: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(400);
-    for _ in 0..steps {
-        let pc = cpu.regs[15];
-        let thumb = cpu.cpsr & 0x20 != 0;
-        let op = if thumb { cpu.bus.read16(pc) as u32 } else { cpu.bus.read32(pc) };
-        let _ = thumb;
-        if ring.len() == 400 { ring.remove(0); }
-        ring.push((pc, op, cpu.regs[13], cpu.regs[14]));
-        cpu.step();
-        cpu.bus.ticks += 1;
-        let top = cpu.regs[15] >> 24;
-        if (cpu.cpsr & 0x1F == 0x1F && cpu.regs[13] >> 24 != 3) || top != 8 {
-            eprintln!("PC escaped to {:#010X}; last instructions:", cpu.regs[15]);
-            for (p, o, sp, lr) in &ring {
-                eprintln!("  {:#010X}: {:#010X} sp={:#010X} lr={:#010X}", p, o, sp, lr);
-            }
-            break;
+    let save_path = format!("{rom_path}.sav");
+    let mut b = bus::Bus::new(rom);
+    if let Ok(sav) = std::fs::read(&save_path) {
+        if sav.len() == b.flash.len() {
+            b.flash = sav;
         }
     }
-    eprintln!(
-        "after {steps} steps: pc={:#010X} r7={:#X} r0-3={:X?}",
-        cpu.regs[15],
-        cpu.regs[7],
-        &cpu.regs[0..4]
-    );
-    dump_mode4(&cpu.bus, "frame.ppm");
+    let mut cpu = cpu::Cpu::new(b);
+
+    // Emulated cycles per instruction: a compromise between ARM7 averages.
+    const CPI: u64 = 4;
+
+    if headless {
+        // Run N frames, dump the last one as PPM.
+        let frames: u32 = env::var("GBA_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
+        let mut n = 0;
+        while n < frames {
+            cpu.step();
+            cpu.bus.tick(CPI);
+            if cpu.bus.frame_ready {
+                cpu.bus.frame_ready = false;
+                n += 1;
+            }
+        }
+        dump_frame(&cpu.bus.ppu.framebuffer, "frame.ppm");
+        eprintln!("pc={:#010X}", cpu.regs[15]);
+        let io = &cpu.bus.io;
+        let r16 = |o: usize| u16::from_le_bytes([io[o], io[o+1]]);
+        eprintln!("DISPCNT={:04X} BG0CNT={:04X} BG1CNT={:04X} BG2CNT={:04X} BG3CNT={:04X}",
+            r16(0), r16(8), r16(0xA), r16(0xC), r16(0xE));
+        eprintln!("BLDCNT={:04X} BLDY={:04X} IE={:04X} IME={}", r16(0x50), r16(0x54), cpu.bus.ie, cpu.bus.ime);
+        let pal_sum: u32 = cpu.bus.palette.iter().map(|&b| b as u32).sum();
+        for blk in 0..6 { 
+            let s: u64 = cpu.bus.vram[blk*0x4000..(blk+1)*0x4000].iter().map(|&b| b as u64).sum();
+            eprintln!("vram[{blk}] sum={s}");
+        }
+        eprintln!("palette sum={pal_sum}");
+        std::fs::write("vram.bin", &cpu.bus.vram).unwrap();
+        std::fs::write("pal.bin", &cpu.bus.palette).unwrap();
+        return ExitCode::SUCCESS;
+    }
+
+    let mut window = Window::new(
+        "gba",
+        ppu::WIDTH,
+        ppu::HEIGHT,
+        WindowOptions { scale: Scale::X4, ..Default::default() },
+    )
+    .expect("failed to open window");
+    window.set_target_fps(60);
+
+    let mut frame_count = 0u64;
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        let mut cycles = 0u64;
+        while cycles < bus::CYCLES_PER_FRAME {
+            cpu.step();
+            cpu.bus.tick(CPI);
+            cycles += CPI;
+        }
+
+        // Keypad, active low: A=Z B=X Sel=RShift Start=Enter arrows L=A R=S
+        let k = |key| !window.is_key_down(key) as u16;
+        cpu.bus.keyinput = k(Key::Z)
+            | k(Key::X) << 1
+            | k(Key::RightShift) << 2
+            | k(Key::Enter) << 3
+            | k(Key::Right) << 4
+            | k(Key::Left) << 5
+            | k(Key::Up) << 6
+            | k(Key::Down) << 7
+            | k(Key::S) << 8
+            | k(Key::A) << 9;
+
+        cpu.bus.frame_ready = false;
+        window
+            .update_with_buffer(&cpu.bus.ppu.framebuffer, ppu::WIDTH, ppu::HEIGHT)
+            .expect("window update failed");
+
+        frame_count += 1;
+        if frame_count % 60 == 0 && cpu.bus.flash_dirty {
+            cpu.bus.flash_dirty = false;
+            let _ = std::fs::write(&save_path, &cpu.bus.flash);
+        }
+    }
+    if cpu.bus.flash_dirty {
+        let _ = std::fs::write(&save_path, &cpu.bus.flash);
+    }
     ExitCode::SUCCESS
 }

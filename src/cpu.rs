@@ -27,6 +27,7 @@ pub struct Cpu {
     spsr_abt: u32,
     spsr_irq: u32,
     spsr_und: u32,
+    pub halted: bool,
     pub bus: Bus,
 }
 
@@ -53,6 +54,7 @@ impl Cpu {
             spsr_abt: 0,
             spsr_irq: 0,
             spsr_und: 0,
+            halted: false,
             bus,
         }
     }
@@ -257,6 +259,27 @@ impl Cpu {
     }
 
     pub fn step(&mut self) {
+        // IRQ delivery: wakes from halt; taken when IME, IE&IF, and CPSR.I allow.
+        let pending = self.bus.ie & self.bus.if_ != 0;
+        if pending {
+            self.halted = false;
+            if self.bus.ime && self.cpsr & 0x80 == 0 {
+                let thumb = self.thumb();
+                let old_cpsr = self.cpsr;
+                let old_mode = self.mode();
+                // LR_irq = next instruction + 4
+                let ret = self.regs[15].wrapping_add(if thumb { 4 } else { 4 });
+                self.cpsr = (self.cpsr & !0x3F) | 0x12 | 0x80; // IRQ mode, ARM, I set
+                self.switch_mode(old_mode);
+                *self.spsr_for_mode() = old_cpsr;
+                self.regs[14] = ret;
+                self.regs[15] = 0x18;
+                return;
+            }
+        }
+        if self.halted {
+            return;
+        }
         if self.thumb() {
             let op = self.bus.read16(self.regs[15]);
             let pc_before = self.regs[15];
@@ -687,7 +710,12 @@ impl Cpu {
                 self.set_flag(T, false);
             }
             0x01 => {} // RegisterRamReset: ignore
-            0x02 | 0x03 | 0x04 | 0x05 => {} // Halt/Stop/IntrWait/VBlankIntrWait: no-op
+            0x02 | 0x03 => self.halted = true, // Halt/Stop
+            0x04 => self.halted = true,        // IntrWait: wake on any enabled IRQ
+            0x05 => {
+                // VBlankIntrWait: enable vblank in IE-of-interest and halt.
+                self.halted = true;
+            }
             0x06 => { // Div: r0/r1 -> r0=quot, r1=rem, r3=|quot|
                 let num = self.regs[0] as i32;
                 let den = self.regs[1] as i32;
@@ -744,12 +772,114 @@ impl Cpu {
                 let src = self.regs[0];
                 let dst = self.regs[1];
                 let cnt = self.regs[2];
-                let count = (cnt & 0x1F_FFFF + 7) & !7;
+                let count = ((cnt & 0x1F_FFFF) + 7) & !7;
                 let fill = cnt & 0x0100_0000 != 0;
                 let v0 = self.bus.read32(src);
                 for i in 0..count {
                     let v = if fill { v0 } else { self.bus.read32(src + i * 4) };
                     self.bus.write32(dst + i * 4, v);
+                }
+            }
+            0x10 => {
+                // BitUnPack: expand sub-byte-width data (used for 1bpp fonts).
+                let src = self.regs[0];
+                let dst = self.regs[1];
+                let info = self.regs[2];
+                let len = self.bus.read16(info) as u32;
+                let src_w = self.bus.read8(info + 2) as u32;
+                let dst_w = self.bus.read8(info + 3) as u32;
+                let off_flags = self.bus.read32(info + 4);
+                let data_off = off_flags & 0x7FFF_FFFF;
+                let zero_flag = off_flags & 0x8000_0000 != 0;
+                let mut out: u32 = 0;
+                let mut out_bits = 0;
+                let mut d = dst;
+                for i in 0..len {
+                    let b = self.bus.read8(src + i) as u32;
+                    let mut bit = 0;
+                    while bit < 8 {
+                        let v = b >> bit & ((1 << src_w) - 1);
+                        let v = if v != 0 || zero_flag { v + data_off } else { v };
+                        out |= v << out_bits;
+                        out_bits += dst_w;
+                        if out_bits >= 32 {
+                            self.bus.write32(d, out);
+                            d += 4;
+                            out = 0;
+                            out_bits = 0;
+                        }
+                        bit += src_w;
+                    }
+                }
+                if out_bits > 0 {
+                    self.bus.write32(d, out);
+                }
+            }
+            0x11 | 0x12 => {
+                // LZ77UnCompWram / LZ77UnCompVram
+                let mut src = self.regs[0];
+                let dst = self.regs[1];
+                let header = self.bus.read32(src);
+                let size = header >> 8;
+                src += 4;
+                let mut written = 0u32;
+                while written < size {
+                    let flags = self.bus.read8(src);
+                    src += 1;
+                    for bit in (0..8).rev() {
+                        if written >= size {
+                            break;
+                        }
+                        if flags >> bit & 1 == 0 {
+                            let b = self.bus.read8(src);
+                            src += 1;
+                            self.bus.write8_lenient(dst + written, b);
+                            written += 1;
+                        } else {
+                            let b0 = self.bus.read8(src) as u32;
+                            let b1 = self.bus.read8(src + 1) as u32;
+                            src += 2;
+                            let len = (b0 >> 4) + 3;
+                            let disp = ((b0 & 0xF) << 8 | b1) + 1;
+                            for _ in 0..len {
+                                if written >= size {
+                                    break;
+                                }
+                                let b = self.bus.read8(dst + written - disp);
+                                self.bus.write8_lenient(dst + written, b);
+                                written += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            0x14 | 0x15 => {
+                // RLUnCompWram / RLUnCompVram
+                let mut src = self.regs[0];
+                let dst = self.regs[1];
+                let size = self.bus.read32(src) >> 8;
+                src += 4;
+                let mut written = 0u32;
+                while written < size {
+                    let flag = self.bus.read8(src);
+                    src += 1;
+                    if flag & 0x80 != 0 {
+                        let len = (flag as u32 & 0x7F) + 3;
+                        let b = self.bus.read8(src);
+                        src += 1;
+                        for _ in 0..len.min(size - written) {
+                            self.bus.write8_lenient(dst + written, b);
+                            written += 1;
+                        }
+                    } else {
+                        let len = (flag as u32 & 0x7F) + 1;
+                        for _ in 0..len.min(size - written) {
+                            let b = self.bus.read8(src);
+                            src += 1;
+                            self.bus.write8_lenient(dst + written, b);
+                            written += 1;
+                        }
+                    }
                 }
             }
             _ => {} // unimplemented BIOS call: ignore
