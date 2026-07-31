@@ -201,12 +201,22 @@ fn main() -> ExitCode {
 
     let mut frame_count = 0u64;
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        let mut cycles = 0u64;
-        while cycles < bus::CYCLES_PER_FRAME {
-            let c = cpi(cpu.regs[15]);
-            cpu.step();
-            cpu.bus.tick(c);
-            cycles += c;
+        // Audio-clock pacing: emulate whole frames until the audio queue
+        // holds ~100ms, so playback never starves and A/V stay locked to
+        // the same clock. At most a few frames per display refresh.
+        let target = 44100 * 2 / 10;
+        for _ in 0..4 {
+            let queued = audio_queue.lock().unwrap().len();
+            if queued + cpu.bus.audio.len() >= target {
+                break;
+            }
+            let mut cycles = 0u64;
+            while cycles < bus::CYCLES_PER_FRAME {
+                let c = cpi(cpu.regs[15]);
+                cpu.step();
+                cpu.bus.tick(c);
+                cycles += c;
+            }
         }
 
         // Keypad, active low: A=Z, B=X, Select=RShift, Start=Enter,
@@ -227,7 +237,9 @@ fn main() -> ExitCode {
         {
             let mut q = audio_queue.lock().unwrap();
             q.extend(cpu.bus.audio.drain(..));
-            while q.len() > 22050 {
+            // Hard cap well above the pacing target; only trims after
+            // pathological pauses (window drag, sleep).
+            while q.len() > 44100 {
                 q.pop_front();
             }
         }
