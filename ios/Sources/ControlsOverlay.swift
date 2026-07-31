@@ -9,6 +9,56 @@ struct ControlsOverlay: View {
     let onEject: () -> Void
 
     var body: some View {
+        GeometryReader { geo in
+            let landscape = geo.size.width > geo.size.height
+            layout(landscape: landscape)
+        }
+    }
+
+    @ViewBuilder
+    private func layout(landscape: Bool) -> some View {
+        if landscape {
+            landscapeLayout
+        } else {
+            portraitLayout
+        }
+    }
+
+    /// Landscape: controls live in the gutters beside the screen.
+    private var landscapeLayout: some View {
+        HStack {
+            VStack(spacing: 18) {
+                DPad(core: core).scaleEffect(0.8)
+                HoldButton(label: "SELECT", keys: .select, core: core, pill: true)
+            }
+            Spacer()
+            VStack(spacing: 14) {
+                HStack(spacing: 12) {
+                    HoldButton(label: "L", keys: .l, core: core, small: true)
+                    HoldButton(label: "R", keys: .r, core: core, small: true)
+                }
+                HStack(spacing: 14) {
+                    HoldButton(label: "B", keys: .b, core: core)
+                    HoldButton(label: "A", keys: .a, core: core)
+                }
+                HStack(spacing: 12) {
+                    HoldButton(label: "START", keys: .start, core: core, pill: true)
+                    Menu {
+                        Button("Save State", action: onSaveState)
+                        Button("Load State", action: onLoadState)
+                        Button("Eject ROM", role: .destructive, action: onEject)
+                    } label: {
+                        Image(systemName: "ellipsis.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+    }
+
+    private var portraitLayout: some View {
         VStack {
             Spacer()
             HStack(alignment: .bottom) {

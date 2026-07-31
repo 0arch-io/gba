@@ -22,13 +22,28 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let core {
-                VStack(spacing: 0) {
-                    EmulatorScreen(core: core)
-                        .aspectRatio(CGFloat(3) / 2, contentMode: .fit)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 8)
-                    Spacer(minLength: 0)
+                GeometryReader { geo in
+                    let landscape = geo.size.width > geo.size.height
+                    if landscape {
+                        // Screen fills the height between the control gutters.
+                        EmulatorScreen(core: core)
+                            .aspectRatio(CGFloat(3) / 2, contentMode: .fit)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(.horizontal, 205)
+                    } else {
+                        // Centered in the space above the controls so the
+                        // screen doesn't float in a void.
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            EmulatorScreen(core: core)
+                                .aspectRatio(CGFloat(3) / 2, contentMode: .fit)
+                                .frame(maxWidth: .infinity)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.bottom, geo.size.height * 0.30)
+                    }
                 }
+                .ignoresSafeArea(edges: .horizontal)
                 ControlsOverlay(core: core, onSaveState: { core.saveState() },
                                 onLoadState: { core.loadState() },
                                 onEject: { eject() })
