@@ -22,7 +22,13 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let core {
-                EmulatorScreen(core: core)
+                VStack(spacing: 0) {
+                    EmulatorScreen(core: core)
+                        .aspectRatio(CGFloat(3) / 2, contentMode: .fit)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
+                    Spacer(minLength: 0)
+                }
                 ControlsOverlay(core: core, onSaveState: { core.saveState() },
                                 onLoadState: { core.loadState() },
                                 onEject: { eject() })
