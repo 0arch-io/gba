@@ -124,8 +124,14 @@ fn main() -> ExitCode {
             config,
             move |out: &mut [f32], _| {
                 let mut q = q.lock().unwrap();
-                for s in out.iter_mut() {
-                    *s = q.pop_front().unwrap_or(0.0);
+                // All-or-nothing: partial drains crackle; silence lets the
+                // queue rebuild.
+                if q.len() < out.len() {
+                    out.fill(0.0);
+                } else {
+                    for s in out.iter_mut() {
+                        *s = q.pop_front().unwrap();
+                    }
                 }
             },
             |e| eprintln!("audio error: {e}"),

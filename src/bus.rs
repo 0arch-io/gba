@@ -60,6 +60,8 @@ pub struct Bus {
     sample_a: i8,
     sample_b: i8,
     sample_timer: u64,
+    lp_l: f32,
+    lp_r: f32,
     /// Stereo interleaved f32 samples for the frontend.
     pub audio: Vec<f32>,
 }
@@ -116,6 +118,8 @@ impl Bus {
             sample_a: 0,
             sample_b: 0,
             sample_timer: 0,
+            lp_l: 0.0,
+            lp_r: 0.0,
             audio: Vec::new(),
         }
     }
@@ -161,15 +165,18 @@ impl Bus {
             if master_on {
                 let va = if cnt_h & 0x04 != 0 { 1.0 } else { 0.5 };
                 let vb = if cnt_h & 0x08 != 0 { 1.0 } else { 0.5 };
-                let a = self.sample_a as f32 / 128.0 * va * 0.5;
-                let b = self.sample_b as f32 / 128.0 * vb * 0.5;
+                let a = self.sample_a as f32 / 128.0 * va * 0.35;
+                let b = self.sample_b as f32 / 128.0 * vb * 0.35;
                 if cnt_h & 0x0200 != 0 { l += a }
                 if cnt_h & 0x0100 != 0 { r += a }
                 if cnt_h & 0x2000 != 0 { l += b }
                 if cnt_h & 0x1000 != 0 { r += b }
             }
-            self.audio.push(l);
-            self.audio.push(r);
+            // One-pole low-pass (~7 kHz), approximating the GBA's output filter.
+            self.lp_l += 0.5 * (l - self.lp_l);
+            self.lp_r += 0.5 * (r - self.lp_r);
+            self.audio.push(self.lp_l);
+            self.audio.push(self.lp_r);
         }
 
         // Hblank starts at cycle 960 of a line.
@@ -369,10 +376,9 @@ impl Bus {
             for _ in 0..4 {
                 let v = self.read32(src);
                 for b in v.to_le_bytes() {
-                    if fifo_addr == 0x0400_00A0 {
-                        self.fifo_a.push_back(b as i8);
-                    } else {
-                        self.fifo_b.push_back(b as i8);
+                    let f = if fifo_addr == 0x0400_00A0 { &mut self.fifo_a } else { &mut self.fifo_b };
+                    if f.len() < 32 {
+                        f.push_back(b as i8);
                     }
                 }
                 src += 4;
@@ -575,8 +581,16 @@ impl Bus {
                     self.timer_frac[t] = 0;
                 }
             }
-            0x0A0..=0x0A3 => self.fifo_a.push_back(val as i8),
-            0x0A4..=0x0A7 => self.fifo_b.push_back(val as i8),
+            0x0A0..=0x0A3 => {
+                if self.fifo_a.len() < 32 {
+                    self.fifo_a.push_back(val as i8);
+                }
+            }
+            0x0A4..=0x0A7 => {
+                if self.fifo_b.len() < 32 {
+                    self.fifo_b.push_back(val as i8);
+                }
+            }
             0x083 => {
                 self.io[0x83] = val;
                 // FIFO reset bits (11/15 of SOUNDCNT_H → bits 3/7 of high byte)
