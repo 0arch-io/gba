@@ -448,7 +448,11 @@ impl Cpu {
             self.hle_swi(op >> 16 & 0xFF);
             return;
         }
-        panic!("unimplemented ARM op {op:#010X} at {:#010X}", self.regs[15]);
+        // Undefined instruction: on hardware this traps; treat as a NOP so
+        // garbage data (e.g. a non-ROM file) can't abort the process.
+        if std::env::var("GBA_STRICT").is_ok() {
+            panic!("unimplemented ARM op {op:#010X} at {:#010X}", self.regs[15]);
+        }
     }
 
     fn exception(&mut self, vector: u32, mode: u32) {
@@ -1123,7 +1127,9 @@ impl Cpu {
                         self.set_r(13, base);
                     }
                 } else {
-                    panic!("unimplemented Thumb op {op:#06X} at {:#010X}", self.regs[15]);
+                    if std::env::var("GBA_STRICT").is_ok() {
+                        panic!("unimplemented Thumb op {op:#06X} at {:#010X}", self.regs[15]);
+                    }
                 }
             }
             0b110 => {
@@ -1189,7 +1195,9 @@ impl Cpu {
                     self.regs[14] = self.regs[15].wrapping_add(2) | 1;
                     self.regs[15] = lr & !1;
                 } else {
-                    panic!("unimplemented Thumb op {op:#06X} at {:#010X}", self.regs[15]);
+                    if std::env::var("GBA_STRICT").is_ok() {
+                        panic!("unimplemented Thumb op {op:#06X} at {:#010X}", self.regs[15]);
+                    }
                 }
             }
         }

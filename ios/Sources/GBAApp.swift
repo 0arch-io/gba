@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var audio: AudioEngine?
     @State private var showPicker = false
     @State private var lastROM: URL?
+    @State private var loadError: String?
 
     var body: some View {
         ZStack {
@@ -71,13 +72,24 @@ struct ContentView: View {
             guard case .success(let url) = result else { return }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            // Copy into Documents so saves live beside a stable location.
-            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let local = docs.appendingPathComponent(url.lastPathComponent)
-            if !FileManager.default.fileExists(atPath: local.path) {
-                try? FileManager.default.copyItem(at: url, to: local)
+            do {
+                // Unzips and validates before anything touches the core.
+                let rom = try ROMLoader.load(from: url)
+                // Store the extracted image in Documents so saves and the
+                // resume-last-ROM path have a stable location.
+                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let name = (url.deletingPathExtension().lastPathComponent) + ".gba"
+                let local = docs.appendingPathComponent(name)
+                try rom.write(to: local)
+                start(rom: rom, url: local)
+            } catch {
+                loadError = error.localizedDescription
             }
-            start(rom: local)
+        }
+        .alert("Can't load that file", isPresented: .constant(loadError != nil)) {
+            Button("OK") { loadError = nil }
+        } message: {
+            Text(loadError ?? "")
         }
         .onAppear { autoStart() }
     }
@@ -86,20 +98,20 @@ struct ContentView: View {
         // Resume the most recently used ROM if present.
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let roms = (try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: [.contentModificationDateKey]))?
-            .filter { $0.pathExtension.lowercased() == "gba" }
+            .filter { ["gba", "zip"].contains($0.pathExtension.lowercased()) }
             .sorted { a, b in
                 let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 return da > db
             } ?? []
-        if let rom = roms.first {
-            start(rom: rom)
+        if let url = roms.first, let data = try? ROMLoader.load(from: url) {
+            start(rom: data, url: url)
         }
     }
 
-    private func start(rom: URL) {
-        guard let c = EmulatorCore(romURL: rom) else { return }
-        lastROM = rom
+    private func start(rom: Data, url: URL) {
+        guard let c = EmulatorCore(rom: rom, romURL: url) else { return }
+        lastROM = url
         core = c
         audio = AudioEngine(core: c)
     }

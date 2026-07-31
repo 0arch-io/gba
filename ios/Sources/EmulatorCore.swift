@@ -30,8 +30,9 @@ final class EmulatorCore {
     let lock = NSLock()
     var pressed = GBAKeys()
 
-    init?(romURL: URL) {
-        guard let rom = try? Data(contentsOf: romURL) else { return nil }
+    /// `rom` is the validated image (already unzipped if needed); `romURL`
+    /// only supplies the name used for save files.
+    init?(rom: Data, romURL: URL) {
         let base = romURL.deletingPathExtension().lastPathComponent
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         savURL = docs.appendingPathComponent(base + ".sav")
