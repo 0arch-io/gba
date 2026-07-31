@@ -33,8 +33,17 @@ fn main() -> ExitCode {
     }
     let mut cpu = cpu::Cpu::new(b);
 
-    // Emulated cycles per instruction: a compromise between ARM7 averages.
-    const CPI: u64 = 4;
+    // Region-aware cycles per instruction: IWRAM runs at full speed (the
+    // m4a audio mixer lives there and needs the throughput), EWRAM has mild
+    // waitstates, ROM pays full waitstates. Charging ROM code ~4 also keeps
+    // boot-time arrival windows close to hardware.
+    fn cpi(pc: u32) -> u64 {
+        match pc >> 24 {
+            0x03 => 1,
+            0x02 => 3,
+            _ => 4,
+        }
+    }
 
     if headless {
         // Run N frames, dump the last one as PPM. GBA_INPUT holds scripted
@@ -63,11 +72,27 @@ fn main() -> ExitCode {
             })
             .collect();
         let mut n = 0;
+        let trace_boot = env::var("GBA_BOOTTRACE").is_ok();
+        let mut pc_hist: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
         let capture_audio = env::var("GBA_WAV").is_ok();
         let mut captured: Vec<f32> = Vec::new();
+        let mut ring: VecDeque<u32> = VecDeque::new();
         while n < frames {
+            let step_cycles = cpi(cpu.regs[15]);
+            if trace_boot {
+                ring.push_back(cpu.regs[15]);
+                if ring.len() > 80 {
+                    ring.pop_front();
+                }
+                if cpu.bus.ime_off_count >= 2 {
+                    for pc in &ring {
+                        eprintln!("trace {:#010X}", pc);
+                    }
+                    return ExitCode::SUCCESS;
+                }
+            }
             cpu.step();
-            cpu.bus.tick(CPI);
+            cpu.bus.tick(step_cycles);
             if cpu.bus.frame_ready {
                 cpu.bus.frame_ready = false;
                 if capture_audio {
@@ -89,6 +114,13 @@ fn main() -> ExitCode {
                 cpu.bus.keyinput = 0x3FF & !held;
             }
         }
+        if trace_boot {
+            let mut v: Vec<_> = pc_hist.into_iter().collect();
+            v.sort_by_key(|&(_, c)| std::cmp::Reverse(c));
+            for (pc, c) in v.into_iter().take(12) {
+                eprintln!("hot {:#010X} x{}", pc, c);
+            }
+        }
         dump_frame(&cpu.bus.ppu.framebuffer, "frame.ppm");
         if capture_audio {
             let raw: Vec<u8> = captured.iter().flat_map(|s| s.to_le_bytes()).collect();
@@ -100,6 +132,9 @@ fn main() -> ExitCode {
         eprintln!("DISPCNT={:04X} BG0CNT={:04X} BG1CNT={:04X} BG2CNT={:04X} BG3CNT={:04X}",
             r16(0), r16(8), r16(0xA), r16(0xC), r16(0xE));
         eprintln!("BLDCNT={:04X} BLDY={:04X} IE={:04X} IME={}", r16(0x50), r16(0x54), cpu.bus.ie, cpu.bus.ime);
+        eprintln!("DISPSTAT={:02X} IF={:04X} halted={} SIOCNT={:04X} biosflags={:08X}",
+            io[4], cpu.bus.if_, cpu.halted, r16(0x128),
+            u32::from_le_bytes([cpu.bus.iwram[0x7FF8],cpu.bus.iwram[0x7FF9],cpu.bus.iwram[0x7FFA],cpu.bus.iwram[0x7FFB]]));
         let pal_sum: u32 = cpu.bus.palette.iter().map(|&b| b as u32).sum();
         for blk in 0..6 { 
             let s: u64 = cpu.bus.vram[blk*0x4000..(blk+1)*0x4000].iter().map(|&b| b as u64).sum();
@@ -107,6 +142,7 @@ fn main() -> ExitCode {
         }
         eprintln!("palette sum={pal_sum}");
         std::fs::write("vram.bin", &cpu.bus.vram).unwrap();
+        std::fs::write("oam.bin", &cpu.bus.oam).unwrap();
         std::fs::write("pal.bin", &cpu.bus.palette).unwrap();
         return ExitCode::SUCCESS;
     }
@@ -156,9 +192,10 @@ fn main() -> ExitCode {
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let mut cycles = 0u64;
         while cycles < bus::CYCLES_PER_FRAME {
+            let c = cpi(cpu.regs[15]);
             cpu.step();
-            cpu.bus.tick(CPI);
-            cycles += CPI;
+            cpu.bus.tick(c);
+            cycles += c;
         }
 
         // Keypad, active low: A=Z B=X Sel=RShift Start=Enter arrows L=A R=S

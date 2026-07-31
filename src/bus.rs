@@ -43,6 +43,8 @@ pub struct Bus {
 
     // Keypad, set by the frontend: active-low bit per key.
     pub keyinput: u16,
+    /// Debug: counts writes of 0 to IME (used by boot-divergence tracing).
+    pub ime_off_count: u32,
 
     // 128KB flash (two 64KB banks) with the standard command protocol.
     pub flash: Vec<u8>,
@@ -105,6 +107,7 @@ impl Bus {
             timer_counter: [0; 4],
             timer_frac: [0; 4],
             keyinput: 0x3FF,
+            ime_off_count: 0,
             flash: vec![0xFF; 0x20000],
             flash_bank: 0,
             flash_state: 0,
@@ -570,6 +573,9 @@ impl Bus {
     }
 
     fn io_write(&mut self, off: u32, val: u8) {
+        if std::env::var("GBA_IOLOG").is_ok() && matches!(off, 0x004 | 0x005 | 0x128 | 0x134 | 0x200 | 0x201 | 0x208) {
+            eprintln!("io write {:03X} = {:02X} (frame ~{})", off, val, self.cycles / 280896);
+        }
         match off {
             0x006 | 0x007 => {} // VCOUNT read-only
             0x102 | 0x106 | 0x10A | 0x10E => {
@@ -605,7 +611,12 @@ impl Bus {
             0x203 => self.if_ &= !((val as u16) << 8),
             0x200 => self.ie = (self.ie & 0xFF00) | val as u16,
             0x201 => self.ie = (self.ie & 0x00FF) | ((val as u16 & 0x3F) << 8),
-            0x208 => self.ime = val & 1 != 0,
+            0x208 => {
+                self.ime = val & 1 != 0;
+                if val & 1 == 0 {
+                    self.ime_off_count += 1;
+                }
+            }
             _ => {
                 if let Some(b) = self.io.get_mut(off as usize) {
                     *b = val;

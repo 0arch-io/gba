@@ -780,6 +780,55 @@ impl Cpu {
                     self.bus.write32(dst + i * 4, v);
                 }
             }
+            0x0E => {
+                // BgAffineSet: compute background affine params + reference.
+                let mut src = self.regs[0];
+                let mut dst = self.regs[1];
+                for _ in 0..self.regs[2] {
+                    let cx = self.bus.read32(src) as i32 as i64;
+                    let cy = self.bus.read32(src + 4) as i32 as i64;
+                    let dx = self.bus.read16(src + 8) as i16 as i64;
+                    let dy = self.bus.read16(src + 10) as i16 as i64;
+                    let sx = self.bus.read16(src + 12) as i16 as i64;
+                    let sy = self.bus.read16(src + 14) as i16 as i64;
+                    let theta = self.bus.read16(src + 16) as f64 / 65536.0 * std::f64::consts::TAU;
+                    let (sin, cos) = theta.sin_cos();
+                    let pa = (sx as f64 * cos) as i64;
+                    let pb = (-(sx as f64) * sin) as i64;
+                    let pc = (sy as f64 * sin) as i64;
+                    let pd = (sy as f64 * cos) as i64;
+                    self.bus.write16(dst, pa as u16);
+                    self.bus.write16(dst + 2, pb as u16);
+                    self.bus.write16(dst + 4, pc as u16);
+                    self.bus.write16(dst + 6, pd as u16);
+                    let x = cx - dx * pa - dy * pb;
+                    let y = cy - dx * pc - dy * pd;
+                    self.bus.write32(dst + 8, x as u32);
+                    self.bus.write32(dst + 12, y as u32);
+                    src += 20;
+                    dst += 16;
+                }
+            }
+            0x0F => {
+                // ObjAffineSet: compute sprite affine matrices. r3 is the
+                // byte stride between successive parameter writes (8 writes
+                // straight into OAM's interleaved layout).
+                let mut src = self.regs[0];
+                let mut dst = self.regs[1];
+                let stride = self.regs[3];
+                for _ in 0..self.regs[2] {
+                    let sx = self.bus.read16(src) as i16 as f64;
+                    let sy = self.bus.read16(src + 2) as i16 as f64;
+                    let theta = self.bus.read16(src + 4) as f64 / 65536.0 * std::f64::consts::TAU;
+                    let (sin, cos) = theta.sin_cos();
+                    self.bus.write16(dst, (sx * cos) as i32 as u16);
+                    self.bus.write16(dst + stride, (-sx * sin) as i32 as u16);
+                    self.bus.write16(dst + stride * 2, (sy * sin) as i32 as u16);
+                    self.bus.write16(dst + stride * 3, (sy * cos) as i32 as u16);
+                    src += 8;
+                    dst += stride * 4;
+                }
+            }
             0x10 => {
                 // BitUnPack: expand sub-byte-width data (used for 1bpp fonts).
                 let src = self.regs[0];
