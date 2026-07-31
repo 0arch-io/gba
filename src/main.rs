@@ -2,9 +2,12 @@ mod bus;
 mod cpu;
 mod ppu;
 
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use minifb::{Key, Scale, Window, WindowOptions};
+use std::collections::VecDeque;
 use std::env;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 
 fn dump_frame(fb: &[u32], path: &str) {
     let mut out = format!("P3\n{} {}\n255\n", ppu::WIDTH, ppu::HEIGHT);
@@ -60,11 +63,22 @@ fn main() -> ExitCode {
             })
             .collect();
         let mut n = 0;
+        let capture_audio = env::var("GBA_WAV").is_ok();
+        let mut captured: Vec<f32> = Vec::new();
         while n < frames {
             cpu.step();
             cpu.bus.tick(CPI);
             if cpu.bus.frame_ready {
                 cpu.bus.frame_ready = false;
+                if capture_audio {
+                    captured.extend(cpu.bus.audio.drain(..));
+                    let cap = 44100 * 2 * 10;
+                    if captured.len() > cap {
+                        captured.drain(..captured.len() - cap);
+                    }
+                } else {
+                    cpu.bus.audio.clear();
+                }
                 n += 1;
                 let mut held = 0u16;
                 for &(a, b, bits) in &script {
@@ -76,6 +90,10 @@ fn main() -> ExitCode {
             }
         }
         dump_frame(&cpu.bus.ppu.framebuffer, "frame.ppm");
+        if capture_audio {
+            let raw: Vec<u8> = captured.iter().flat_map(|s| s.to_le_bytes()).collect();
+            std::fs::write("samples.raw", raw).unwrap();
+        }
         eprintln!("pc={:#010X}", cpu.regs[15]);
         let io = &cpu.bus.io;
         let r16 = |o: usize| u16::from_le_bytes([io[o], io[o+1]]);
@@ -92,6 +110,32 @@ fn main() -> ExitCode {
         std::fs::write("pal.bin", &cpu.bus.palette).unwrap();
         return ExitCode::SUCCESS;
     }
+
+    // Audio: cpal pulls from a shared queue fed by the emulator.
+    let audio_queue: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let _stream = cpal::default_host().default_output_device().map(|dev| {
+        let config = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: 44100u32.into(),
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let q = audio_queue.clone();
+        dev.build_output_stream(
+            config,
+            move |out: &mut [f32], _| {
+                let mut q = q.lock().unwrap();
+                for s in out.iter_mut() {
+                    *s = q.pop_front().unwrap_or(0.0);
+                }
+            },
+            |e| eprintln!("audio error: {e}"),
+            None,
+        )
+        .map(|s| {
+            s.play().ok();
+            s
+        })
+    });
 
     let mut window = Window::new(
         "gba",
@@ -123,6 +167,14 @@ fn main() -> ExitCode {
             | k(Key::Down) << 7
             | k(Key::S) << 8
             | k(Key::A) << 9;
+
+        {
+            let mut q = audio_queue.lock().unwrap();
+            q.extend(cpu.bus.audio.drain(..));
+            while q.len() > 22050 {
+                q.pop_front();
+            }
+        }
 
         cpu.bus.frame_ready = false;
         window

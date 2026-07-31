@@ -53,6 +53,15 @@ pub struct Bus {
     flash_write_byte: bool,
     flash_bank_select: bool,
     pub flash_dirty: bool,
+
+    // DirectSound: two FIFO channels fed by timer-paced DMA1/DMA2.
+    fifo_a: std::collections::VecDeque<i8>,
+    fifo_b: std::collections::VecDeque<i8>,
+    sample_a: i8,
+    sample_b: i8,
+    sample_timer: u64,
+    /// Stereo interleaved f32 samples for the frontend.
+    pub audio: Vec<f32>,
 }
 
 impl Bus {
@@ -102,6 +111,12 @@ impl Bus {
             flash_write_byte: false,
             flash_bank_select: false,
             flash_dirty: false,
+            fifo_a: std::collections::VecDeque::new(),
+            fifo_b: std::collections::VecDeque::new(),
+            sample_a: 0,
+            sample_b: 0,
+            sample_timer: 0,
+            audio: Vec::new(),
         }
     }
 
@@ -134,6 +149,28 @@ impl Bus {
         self.cycles += cycles;
         self.line_cycles += cycles;
         self.tick_timers(cycles);
+
+        // Resample DirectSound output to 44.1kHz (2^24 Hz CPU clock).
+        self.sample_timer += cycles * 44100;
+        while self.sample_timer >= 1 << 24 {
+            self.sample_timer -= 1 << 24;
+            let cnt_h = self.io16(0x82);
+            let master_on = self.io[0x84] & 0x80 != 0;
+            let mut l = 0.0f32;
+            let mut r = 0.0f32;
+            if master_on {
+                let va = if cnt_h & 0x04 != 0 { 1.0 } else { 0.5 };
+                let vb = if cnt_h & 0x08 != 0 { 1.0 } else { 0.5 };
+                let a = self.sample_a as f32 / 128.0 * va * 0.5;
+                let b = self.sample_b as f32 / 128.0 * vb * 0.5;
+                if cnt_h & 0x0200 != 0 { l += a }
+                if cnt_h & 0x0100 != 0 { r += a }
+                if cnt_h & 0x2000 != 0 { l += b }
+                if cnt_h & 0x1000 != 0 { r += b }
+            }
+            self.audio.push(l);
+            self.audio.push(r);
+        }
 
         // Hblank starts at cycle 960 of a line.
         if !self.in_hblank && self.line_cycles >= 960 {
@@ -222,6 +259,21 @@ impl Bus {
             if overflowed[t] && cnt & 0x40 != 0 {
                 self.request_irq(IRQ_TIMER0 << t);
             }
+            if overflowed[t] && t < 2 {
+                let cnt_h = self.io16(0x82);
+                if (cnt_h >> 10 & 1) as usize == t {
+                    self.sample_a = self.fifo_a.pop_front().unwrap_or(self.sample_a);
+                    if self.fifo_a.len() <= 16 {
+                        self.run_fifo_dma(0x0400_00A0);
+                    }
+                }
+                if (cnt_h >> 14 & 1) as usize == t {
+                    self.sample_b = self.fifo_b.pop_front().unwrap_or(self.sample_b);
+                    if self.fifo_b.len() <= 16 {
+                        self.run_fifo_dma(0x0400_00A4);
+                    }
+                }
+            }
         }
     }
 
@@ -287,6 +339,47 @@ impl Bus {
             if cnt & 0x0200 == 0 || timing == 0 {
                 let ncnt = cnt & !0x8000;
                 self.io[base + 10..base + 12].copy_from_slice(&ncnt.to_le_bytes());
+            }
+        }
+    }
+
+    /// DMA1/DMA2 in "special" timing refill a sound FIFO: 4 words, fixed dst.
+    fn run_fifo_dma(&mut self, fifo_addr: u32) {
+        for ch in 1..=2usize {
+            let base = 0xB0 + ch * 12;
+            let cnt = self.io16(base + 10);
+            if cnt & 0x8000 == 0 || cnt >> 12 & 3 != 3 {
+                continue;
+            }
+            let dst = u32::from_le_bytes([
+                self.io[base + 4],
+                self.io[base + 5],
+                self.io[base + 6],
+                self.io[base + 7],
+            ]);
+            if dst != fifo_addr {
+                continue;
+            }
+            let mut src = u32::from_le_bytes([
+                self.io[base],
+                self.io[base + 1],
+                self.io[base + 2],
+                self.io[base + 3],
+            ]) & !3;
+            for _ in 0..4 {
+                let v = self.read32(src);
+                for b in v.to_le_bytes() {
+                    if fifo_addr == 0x0400_00A0 {
+                        self.fifo_a.push_back(b as i8);
+                    } else {
+                        self.fifo_b.push_back(b as i8);
+                    }
+                }
+                src += 4;
+            }
+            self.io[base..base + 4].copy_from_slice(&src.to_le_bytes());
+            if cnt & 0x4000 != 0 {
+                self.request_irq(IRQ_DMA0 << ch);
             }
         }
     }
@@ -480,6 +573,18 @@ impl Bus {
                 if was == 0 && val & 0x80 != 0 {
                     self.timer_counter[t] = self.io16(0x100 + t * 4) as u32;
                     self.timer_frac[t] = 0;
+                }
+            }
+            0x0A0..=0x0A3 => self.fifo_a.push_back(val as i8),
+            0x0A4..=0x0A7 => self.fifo_b.push_back(val as i8),
+            0x083 => {
+                self.io[0x83] = val;
+                // FIFO reset bits (11/15 of SOUNDCNT_H → bits 3/7 of high byte)
+                if val & 0x08 != 0 {
+                    self.fifo_a.clear();
+                }
+                if val & 0x80 != 0 {
+                    self.fifo_b.clear();
                 }
             }
             0x202 => self.if_ &= !(val as u16), // write-1-to-clear
