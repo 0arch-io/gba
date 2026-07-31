@@ -46,6 +46,11 @@ pub struct Bus {
     /// Debug: counts writes of 0 to IME (used by boot-divergence tracing).
     pub ime_off_count: u32,
 
+    // DMA internal address latches. Hardware latches SAD/DAD on enable and
+    // never exposes the incremented values back through the registers.
+    dma_src: [u32; 4],
+    dma_dst: [u32; 4],
+
     // 128KB flash (two 64KB banks) with the standard command protocol.
     pub flash: Vec<u8>,
     flash_bank: usize,
@@ -108,6 +113,8 @@ impl Bus {
             timer_frac: [0; 4],
             keyinput: 0x3FF,
             ime_off_count: 0,
+            dma_src: [0; 4],
+            dma_dst: [0; 4],
             flash: vec![0xFF; 0x20000],
             flash_bank: 0,
             flash_state: 0,
@@ -296,18 +303,18 @@ impl Bus {
             if cnt & 0x8000 == 0 || (cnt >> 12 & 3) != timing {
                 continue;
             }
-            let src = u32::from_le_bytes([
-                self.io[base],
-                self.io[base + 1],
-                self.io[base + 2],
-                self.io[base + 3],
-            ]);
-            let dst = u32::from_le_bytes([
-                self.io[base + 4],
-                self.io[base + 5],
-                self.io[base + 6],
-                self.io[base + 7],
-            ]);
+            let src = self.dma_src[ch];
+            // Destination "increment+reload" mode re-latches DAD each trigger.
+            let dst = if cnt >> 5 & 3 == 3 {
+                u32::from_le_bytes([
+                    self.io[base + 4],
+                    self.io[base + 5],
+                    self.io[base + 6],
+                    self.io[base + 7],
+                ])
+            } else {
+                self.dma_dst[ch]
+            };
             let mut count = self.io16(base + 8) as u32;
             if count == 0 {
                 count = if ch == 3 { 0x10000 } else { 0x4000 };
@@ -337,11 +344,11 @@ impl Bus {
                     _ => d,
                 };
             }
-            // Write back incremented source; dst "increment+reload" keeps
-            // the register value.
-            self.io[base..base + 4].copy_from_slice(&s.to_le_bytes());
+            // Update internal latches only; the visible registers are
+            // write-only on hardware and keep their programmed values.
+            self.dma_src[ch] = s;
             if dst_ctl != 3 {
-                self.io[base + 4..base + 8].copy_from_slice(&d.to_le_bytes());
+                self.dma_dst[ch] = d;
             }
             if cnt & 0x4000 != 0 {
                 self.request_irq(IRQ_DMA0 << ch);
@@ -370,12 +377,7 @@ impl Bus {
             if dst != fifo_addr {
                 continue;
             }
-            let mut src = u32::from_le_bytes([
-                self.io[base],
-                self.io[base + 1],
-                self.io[base + 2],
-                self.io[base + 3],
-            ]) & !3;
+            let mut src = self.dma_src[ch] & !3;
             for _ in 0..4 {
                 let v = self.read32(src);
                 for b in v.to_le_bytes() {
@@ -386,7 +388,7 @@ impl Bus {
                 }
                 src += 4;
             }
-            self.io[base..base + 4].copy_from_slice(&src.to_le_bytes());
+            self.dma_src[ch] = src;
             if cnt & 0x4000 != 0 {
                 self.request_irq(IRQ_DMA0 << ch);
             }
@@ -625,9 +627,24 @@ impl Bus {
                 if (0x28..0x30).contains(&off) || (0x38..0x40).contains(&off) {
                     self.reload_affine_refs();
                 }
-                // DMA enable with immediate timing fires right away.
+                // DMA enable rising edge: latch SAD/DAD like hardware, and
+                // fire immediately-timed transfers.
                 if let 0xBB | 0xC7 | 0xD3 | 0xDF = off {
                     if val & 0x80 != 0 {
+                        let ch = (off as usize - 0xBB) / 12;
+                        let base = 0xB0 + ch * 12;
+                        self.dma_src[ch] = u32::from_le_bytes([
+                            self.io[base],
+                            self.io[base + 1],
+                            self.io[base + 2],
+                            self.io[base + 3],
+                        ]);
+                        self.dma_dst[ch] = u32::from_le_bytes([
+                            self.io[base + 4],
+                            self.io[base + 5],
+                            self.io[base + 6],
+                            self.io[base + 7],
+                        ]);
                         self.run_dma(0);
                     }
                 }
