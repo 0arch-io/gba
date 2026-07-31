@@ -34,8 +34,31 @@ fn main() -> ExitCode {
     const CPI: u64 = 4;
 
     if headless {
-        // Run N frames, dump the last one as PPM.
+        // Run N frames, dump the last one as PPM. GBA_INPUT holds scripted
+        // key presses: "first-last:key,..." (frame ranges, inclusive start).
         let frames: u32 = env::var("GBA_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
+        let script: Vec<(u32, u32, u16)> = env::var("GBA_INPUT")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|part| {
+                let (range, key) = part.split_once(':')?;
+                let (a, b) = range.split_once('-')?;
+                let bit = match key {
+                    "a" => 0,
+                    "b" => 1,
+                    "select" => 2,
+                    "start" => 3,
+                    "right" => 4,
+                    "left" => 5,
+                    "up" => 6,
+                    "down" => 7,
+                    "r" => 8,
+                    "l" => 9,
+                    _ => return None,
+                };
+                Some((a.parse().ok()?, b.parse().ok()?, 1u16 << bit))
+            })
+            .collect();
         let mut n = 0;
         while n < frames {
             cpu.step();
@@ -43,6 +66,13 @@ fn main() -> ExitCode {
             if cpu.bus.frame_ready {
                 cpu.bus.frame_ready = false;
                 n += 1;
+                let mut held = 0u16;
+                for &(a, b, bits) in &script {
+                    if n >= a && n < b {
+                        held |= bits;
+                    }
+                }
+                cpu.bus.keyinput = 0x3FF & !held;
             }
         }
         dump_frame(&cpu.bus.ppu.framebuffer, "frame.ppm");

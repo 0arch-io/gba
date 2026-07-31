@@ -11,6 +11,40 @@ fn rgb555(c: u16) -> u32 {
     (r << 19 | r >> 2 << 16) | (g << 11 | g >> 2 << 8) | (b << 3 | b >> 2)
 }
 
+#[derive(Clone, Copy, Default)]
+struct ObjPixel {
+    color: u16,
+    prio: u8,
+    opaque: bool,
+    semi: bool,   // OAM mode 1: semi-transparent
+    window: bool, // OAM mode 2: contributes to the object window
+}
+
+fn blend(a: u16, b: u16, eva: u32, evb: u32) -> u16 {
+    let comp = |sh: u16| {
+        let ca = (a >> sh & 0x1F) as u32;
+        let cb = (b >> sh & 0x1F) as u32;
+        ((ca * eva + cb * evb) / 16).min(31) as u16
+    };
+    comp(0) | comp(5) << 5 | comp(10) << 10
+}
+
+fn brighten(a: u16, evy: u32) -> u16 {
+    let comp = |sh: u16| {
+        let c = (a >> sh & 0x1F) as u32;
+        (c + (31 - c) * evy / 16) as u16
+    };
+    comp(0) | comp(5) << 5 | comp(10) << 10
+}
+
+fn darken(a: u16, evy: u32) -> u16 {
+    let comp = |sh: u16| {
+        let c = (a >> sh & 0x1F) as u32;
+        (c - c * evy / 16) as u16
+    };
+    comp(0) | comp(5) << 5 | comp(10) << 10
+}
+
 pub struct Ppu {
     pub framebuffer: [u32; WIDTH * HEIGHT],
 }
@@ -55,64 +89,153 @@ impl Ppu {
         }
         row.fill(backdrop);
 
-        // Sprite line buffer: (color, priority) per pixel, drawn first into
-        // a side buffer honoring OAM order.
-        let mut obj_line = [(0u32, 255u8, false); WIDTH]; // color, prio, opaque
+        // Per-layer line buffers: BG layers as raw RGB555 (0x8000 flag =
+        // opaque), sprites with priority and attributes.
+        let mut bg_line = [[0u16; WIDTH]; 4]; // bit15 set = opaque pixel
+        let mut obj_line = [ObjPixel::default(); WIDTH];
         if dispcnt & 0x1000 != 0 {
             Self::render_sprites(y, dispcnt, palette, vram, oam, &mut obj_line);
         }
-
-        // Compose: priorities 3 (back) to 0 (front); BGs 3..0 then sprites.
-        for prio in (0..4u16).rev() {
-            for bg in (0..4u32).rev() {
-                if dispcnt & (1 << (8 + bg)) == 0 {
-                    continue;
+        for bg in 0..4u32 {
+            if dispcnt & (1 << (8 + bg)) == 0 {
+                continue;
+            }
+            let buf = &mut bg_line[bg as usize];
+            match (mode, bg) {
+                (0, _) | (1, 0) | (1, 1) => Self::draw_text_bg(y, bg, io, palette, vram, buf),
+                (1, 2) | (2, 2) | (2, 3) => {
+                    Self::draw_affine_bg(y, bg, io, palette, vram, buf, bg_ref)
                 }
-                let bgcnt = r16(0x8 + bg as usize * 2);
-                if bgcnt & 3 != prio {
-                    continue;
+                (3, 2) => {
+                    for x in 0..WIDTH {
+                        let off = (y as usize * WIDTH + x) * 2;
+                        buf[x] = u16::from_le_bytes([vram[off], vram[off + 1]]) | 0x8000;
+                    }
                 }
-                match (mode, bg) {
-                    (0, _) | (1, 0) | (1, 1) => {
-                        Self::draw_text_bg(y, bg, io, palette, vram, row)
-                    }
-                    (1, 2) | (2, 2) | (2, 3) => {
-                        Self::draw_affine_bg(y, bg, io, palette, vram, row, bg_ref)
-                    }
-                    (3, 2) => {
-                        for x in 0..WIDTH {
-                            let off = (y as usize * WIDTH + x) * 2;
-                            row[x] = rgb555(u16::from_le_bytes([vram[off], vram[off + 1]]));
+                (4, 2) => {
+                    let base = if dispcnt & 0x10 != 0 { 0xA000 } else { 0 };
+                    for x in 0..WIDTH {
+                        let pi = vram[base + y as usize * WIDTH + x] as u32;
+                        if pi != 0 {
+                            buf[x] = Self::pal256(palette, pi, false) | 0x8000;
                         }
                     }
-                    (4, 2) => {
+                }
+                (5, 2) => {
+                    if (y as usize) < 128 {
                         let base = if dispcnt & 0x10 != 0 { 0xA000 } else { 0 };
-                        for x in 0..WIDTH {
-                            let pi = vram[base + y as usize * WIDTH + x] as u32;
-                            if pi != 0 {
-                                row[x] = rgb555(Self::pal256(palette, pi, false));
-                            }
+                        for x in 0..160.min(WIDTH) {
+                            let off = base + (y as usize * 160 + x) * 2;
+                            buf[x] = u16::from_le_bytes([vram[off], vram[off + 1]]) | 0x8000;
                         }
                     }
-                    (5, 2) => {
-                        if (y as usize) < 128 {
-                            let base = if dispcnt & 0x10 != 0 { 0xA000 } else { 0 };
-                            for x in 0..160.min(WIDTH) {
-                                let off = base + (y as usize * 160 + x) * 2;
-                                row[x] = rgb555(u16::from_le_bytes([vram[off], vram[off + 1]]));
-                            }
+                }
+                _ => {}
+            }
+        }
+
+        // Window configuration. Layer visibility masks per region.
+        let win0_on = dispcnt & 0x2000 != 0;
+        let win1_on = dispcnt & 0x4000 != 0;
+        let objwin_on = dispcnt & 0x8000 != 0;
+        let any_window = win0_on || win1_on || objwin_on;
+        let winin = r16(0x48);
+        let winout = r16(0x4A);
+        let win_range = |h: u16, v: u16| -> (u32, u32, u32, u32) {
+            let x1 = (h >> 8) as u32;
+            let x2 = (h & 0xFF) as u32;
+            let y1 = (v >> 8) as u32;
+            let y2 = (v & 0xFF) as u32;
+            (x1, x2.min(WIDTH as u32), y1, y2)
+        };
+        let (w0x1, w0x2, w0y1, w0y2) = win_range(r16(0x40), r16(0x44));
+        let (w1x1, w1x2, w1y1, w1y2) = win_range(r16(0x42), r16(0x46));
+        let in_vrange = |y1: u32, y2: u32| {
+            if y1 <= y2 { y >= y1 && y < y2 } else { y >= y1 || y < y2 }
+        };
+        let w0v = win0_on && in_vrange(w0y1, w0y2);
+        let w1v = win1_on && in_vrange(w1y1, w1y2);
+
+        // Blending configuration.
+        let bldcnt = r16(0x50);
+        let blend_mode = bldcnt >> 6 & 3;
+        let bldalpha = r16(0x52);
+        let eva = (bldalpha & 0x1F).min(16) as u32;
+        let evb = (bldalpha >> 8 & 0x1F).min(16) as u32;
+        let evy = (r16(0x54) & 0x1F).min(16) as u32;
+        let backdrop = u16::from_le_bytes([palette[0], palette[1]]);
+
+        for x in 0..WIDTH {
+            let xu = x as u32;
+            // Determine layer-enable mask and effect-enable for this pixel.
+            let (mask, effects) = if any_window {
+                let in_h = |x1: u32, x2: u32| {
+                    if x1 <= x2 { xu >= x1 && xu < x2 } else { xu >= x1 || xu < x2 }
+                };
+                if w0v && in_h(w0x1, w0x2) {
+                    (winin & 0x3F, winin & 0x20 != 0)
+                } else if w1v && in_h(w1x1, w1x2) {
+                    (winin >> 8 & 0x3F, winin & 0x2000 != 0)
+                } else if objwin_on && obj_line[x].window {
+                    (winout >> 8 & 0x3F, winout & 0x2000 != 0)
+                } else {
+                    (winout & 0x3F, winout & 0x20 != 0)
+                }
+            } else {
+                (0x3F, true)
+            };
+
+            // Find top and second pixel: (color, layer id 0-3 BG, 4 OBJ, 5 backdrop).
+            let mut top = (backdrop, 5u16);
+            let mut second = (backdrop, 5u16);
+            let mut top_set = false;
+            let obj = &obj_line[x];
+            'search: for prio in 0..4u8 {
+                // OBJ above BGs of the same priority.
+                if obj.opaque && obj.prio == prio && mask & 0x10 != 0 {
+                    if !top_set {
+                        top = (obj.color, 4);
+                        top_set = true;
+                    } else {
+                        second = (obj.color, 4);
+                        break 'search;
+                    }
+                }
+                for bg in 0..4usize {
+                    if mask & (1 << bg) == 0 || dispcnt & (1 << (8 + bg)) == 0 {
+                        continue;
+                    }
+                    let bgcnt = r16(0x8 + bg * 2);
+                    if (bgcnt & 3) as u8 != prio {
+                        continue;
+                    }
+                    let p = bg_line[bg][x];
+                    if p & 0x8000 != 0 {
+                        if !top_set {
+                            top = (p & 0x7FFF, bg as u16);
+                            top_set = true;
+                        } else {
+                            second = (p & 0x7FFF, bg as u16);
+                            break 'search;
                         }
                     }
-                    _ => {}
                 }
             }
-            for x in 0..WIDTH {
-                if obj_line[x].2 && obj_line[x].1 as u16 <= prio {
-                    if obj_line[x].1 as u16 == prio {
-                        row[x] = obj_line[x].0;
-                    }
-                }
-            }
+
+            // Apply color effects.
+            let t1 = bldcnt & (1 << top.1) != 0;
+            let t2 = bldcnt & (1 << (8 + second.1)) != 0;
+            let semi = top.1 == 4 && obj.semi;
+            let final555 = if effects && (semi || blend_mode == 1) && (semi || t1) && t2 {
+                blend(top.0, second.0, eva, evb)
+            } else if effects && blend_mode == 2 && t1 {
+                brighten(top.0, evy)
+            } else if effects && blend_mode == 3 && t1 {
+                darken(top.0, evy)
+            } else {
+                top.0
+            };
+            row[x] = rgb555(final555);
         }
     }
 
@@ -122,7 +245,7 @@ impl Ppu {
         io: &[u8],
         palette: &[u8],
         vram: &[u8],
-        row: &mut [u32],
+        row: &mut [u16],
     ) {
         let r16 = |off: usize| u16::from_le_bytes([io[off], io[off + 1]]) as u32;
         let bgcnt = r16(0x8 + bg as usize * 2);
@@ -179,7 +302,7 @@ impl Ppu {
                 } else {
                     Self::pal16(palette, entry >> 12, color, false)
                 };
-                row[x as usize] = rgb555(c);
+                row[x as usize] = c | 0x8000;
             }
         }
     }
@@ -190,7 +313,7 @@ impl Ppu {
         io: &[u8],
         palette: &[u8],
         vram: &[u8],
-        row: &mut [u32],
+        row: &mut [u16],
         bg_ref: &[(i32, i32); 2],
     ) {
         let r16 = |off: usize| u16::from_le_bytes([io[off], io[off + 1]]) as u32;
@@ -223,10 +346,21 @@ impl Ppu {
             if off < 0x10000 {
                 let ci = vram[off] as u32;
                 if ci != 0 {
-                    row[x] = rgb555(Self::pal256(palette, ci, false));
+                    row[x] = Self::pal256(palette, ci, false) | 0x8000;
                 }
             }
         }
+    }
+
+    fn put_obj(px: &mut ObjPixel, color: u16, prio: u8, mode: u32) {
+        if mode == 2 {
+            px.window = true;
+            return;
+        }
+        px.color = color;
+        px.prio = prio;
+        px.opaque = true;
+        px.semi = mode == 1;
     }
 
     fn render_sprites(
@@ -235,7 +369,7 @@ impl Ppu {
         palette: &[u8],
         vram: &[u8],
         oam: &[u8],
-        out: &mut [(u32, u8, bool); WIDTH],
+        out: &mut [ObjPixel; WIDTH],
     ) {
         let one_dim = dispcnt & 0x40 != 0;
         let bitmap_mode = dispcnt & 7 >= 3;
@@ -260,6 +394,10 @@ impl Ppu {
                 (2, 2) => (16, 32),
                 _ => (32, 64),
             };
+            let obj_mode = a0 >> 10 & 3; // 0 normal, 1 semi-transparent, 2 obj-window
+            if obj_mode == 3 {
+                continue;
+            }
             let double = affine && a0 & 0x200 != 0;
             let (bw, bh) = if double { (w * 2, h * 2) } else { (w, h) };
             let sy = a0 & 0xFF;
@@ -325,7 +463,7 @@ impl Ppu {
                         } else {
                             Self::pal16(palette, pal_bank, ci, true)
                         };
-                        out[x as usize] = (rgb555(c), prio, true);
+                        Self::put_obj(&mut out[x as usize], c, prio, obj_mode);
                     }
                 }
             } else {
@@ -345,7 +483,7 @@ impl Ppu {
                         } else {
                             Self::pal16(palette, pal_bank, ci, true)
                         };
-                        out[x as usize] = (rgb555(c), prio, true);
+                        Self::put_obj(&mut out[x as usize], c, prio, obj_mode);
                     }
                 }
             }
