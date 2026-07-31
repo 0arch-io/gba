@@ -1,6 +1,7 @@
 mod bus;
 mod cpu;
 mod ppu;
+mod psg;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use minifb::{Key, Scale, Window, WindowOptions};
@@ -200,21 +201,50 @@ fn main() -> ExitCode {
     .expect("failed to open window");
     window.set_target_fps(60);
 
+    let state_path = format!("{rom_path}.state");
     let mut frame_count = 0u64;
+    let mut paused = false;
     let mut presented = vec![0u32; ppu::WIDTH * ppu::HEIGHT];
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        // F5 save state, F7 load state, P pause, hold Tab fast-forward.
+        if window.is_key_pressed(Key::F5, minifb::KeyRepeat::No) {
+            match bincode::encode_to_vec(&cpu, bincode::config::standard()) {
+                Ok(b) => match std::fs::write(&state_path, b) {
+                    Ok(_) => eprintln!("state saved"),
+                    Err(e) => eprintln!("save state failed: {e}"),
+                },
+                Err(e) => eprintln!("save state failed: {e}"),
+            }
+        }
+        if window.is_key_pressed(Key::F7, minifb::KeyRepeat::No) {
+            match std::fs::read(&state_path).map_err(|e| e.to_string()).and_then(|b| {
+                bincode::decode_from_slice::<cpu::Cpu, _>(&b, bincode::config::standard())
+                    .map_err(|e| e.to_string())
+            }) {
+                Ok((loaded, _)) => {
+                    cpu = loaded;
+                    eprintln!("state loaded");
+                }
+                Err(e) => eprintln!("load state failed: {e}"),
+            }
+        }
+        if window.is_key_pressed(Key::P, minifb::KeyRepeat::No) {
+            paused = !paused;
+        }
+        let turbo = window.is_key_down(Key::Tab);
         // Audio-clock pacing: emulate whole frames until the audio queue
         // holds ~100ms, so playback never starves and A/V stay locked to
         // the same clock. At most a few frames per display refresh.
         let target = 44100 * 2 / 10;
-        for i in 0..4 {
+        let max_frames = if paused { 0 } else if turbo { 8 } else { 4 };
+        for i in 0..max_frames {
             // Without audio output the queue never drains; fall back to one
             // frame per display refresh.
             if !audio_ok && i > 0 {
                 break;
             }
             let queued = audio_queue.lock().unwrap().len();
-            if audio_ok && queued + cpu.bus.audio.len() >= target {
+            if audio_ok && !turbo && queued + cpu.bus.audio.len() >= target {
                 break;
             }
             // Run to the next completed video frame so the framebuffer is
@@ -247,6 +277,9 @@ fn main() -> ExitCode {
 
         {
             let mut q = audio_queue.lock().unwrap();
+            if turbo {
+                cpu.bus.audio.clear(); // keep audio realtime during fast-forward
+            }
             q.extend(cpu.bus.audio.drain(..));
             // Hard cap well above the pacing target; only trims after
             // pathological pauses (window drag, sleep).

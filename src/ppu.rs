@@ -45,6 +45,7 @@ fn darken(a: u16, evy: u32) -> u16 {
     comp(0) | comp(5) << 5 | comp(10) << 10
 }
 
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct Ppu {
     pub framebuffer: [u32; WIDTH * HEIGHT],
 }

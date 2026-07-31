@@ -1,4 +1,5 @@
 use crate::ppu::Ppu;
+use crate::psg::Psg;
 
 /// Scanline timing in CPU cycles (16.78 MHz): 1232 per line, 228 lines.
 const CYCLES_PER_LINE: u64 = 1232;
@@ -13,6 +14,7 @@ const IRQ_VCOUNT: u16 = 1 << 2;
 const IRQ_TIMER0: u16 = 1 << 3;
 const IRQ_DMA0: u16 = 1 << 8;
 
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct Bus {
     pub bios: Vec<u8>,
     pub ewram: Vec<u8>,
@@ -23,6 +25,7 @@ pub struct Bus {
     pub io: [u8; 0x800],
     pub rom: Vec<u8>,
     pub ppu: Ppu,
+    pub psg: Psg,
 
     // Interrupts
     pub ime: bool,
@@ -110,6 +113,7 @@ impl Bus {
             io,
             rom,
             ppu: Ppu::new(),
+            psg: Psg::new(),
             ime: false,
             ie: 0,
             if_: 0,
@@ -176,6 +180,8 @@ impl Bus {
         self.line_cycles += cycles;
         self.tick_timers(cycles);
 
+        self.psg.tick(cycles as u32);
+
         // Resample DirectSound output to 44.1kHz (2^24 Hz CPU clock).
         self.sample_timer += cycles * 44100;
         while self.sample_timer >= 1 << 24 {
@@ -193,7 +199,18 @@ impl Bus {
                 if cnt_h & 0x0100 != 0 { r += a }
                 if cnt_h & 0x2000 != 0 { l += b }
                 if cnt_h & 0x1000 != 0 { r += b }
+                let (pl, pr) = self.psg.output();
+                let pv = match cnt_h & 3 {
+                    0 => 0.25,
+                    1 => 0.5,
+                    _ => 1.0,
+                };
+                l += pl * pv;
+                r += pr * pv;
             }
+            // Headroom so DirectSound + PSG at full tilt cannot clip.
+            let l = l * 0.7;
+            let r = r * 0.7;
             // One-pole low-pass (~7 kHz), approximating the GBA's output filter.
             self.lp_l += 0.5 * (l - self.lp_l);
             self.lp_r += 0.5 * (r - self.lp_r);
@@ -577,6 +594,7 @@ impl Bus {
             0x101 | 0x105 | 0x109 | 0x10D => {
                 (self.timer_counter[(off as usize - 0x101) / 4] >> 8) as u8
             }
+            0x060..=0x081 | 0x090..=0x09F => self.psg.read(off),
             0x130 => self.keyinput as u8,
             0x131 => (self.keyinput >> 8) as u8 & 3,
             0x200 => self.ie as u8,
@@ -622,6 +640,12 @@ impl Bus {
                 }
                 if val & 0x80 != 0 {
                     self.fifo_b.clear();
+                }
+            }
+            0x060..=0x07F | 0x080 | 0x081 | 0x090..=0x09F => {
+                self.psg.write(off, val);
+                if let Some(b) = self.io.get_mut(off as usize) {
+                    *b = val; // SOUNDCNT_H etc. still visible via io[]
                 }
             }
             0x202 => self.if_ &= !(val as u16), // write-1-to-clear

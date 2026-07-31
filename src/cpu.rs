@@ -10,6 +10,7 @@ const T: u32 = 1 << 5; // Thumb state
 /// The ARM7TDMI. Executes both the 32-bit ARM and 16-bit Thumb instruction
 /// sets. No pipeline emulation: r15 reads as the architectural PC+8 (ARM) or
 /// PC+4 (Thumb), which is what a flushed three-stage pipeline exposes.
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct Cpu {
     pub regs: [u32; 16],
     pub cpsr: u32,
