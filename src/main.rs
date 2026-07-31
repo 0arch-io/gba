@@ -1,7 +1,4 @@
-mod bus;
-mod cpu;
-mod ppu;
-mod psg;
+use gba::{bus, cpu, ppu};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use minifb::{Key, Scale, Window, WindowOptions};

@@ -8,3 +8,5 @@ refprobe
 *.c
 paltrace.txt
 *.bin
+ios/GBA.xcodeproj/
+ios/DerivedData/

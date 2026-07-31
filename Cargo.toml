@@ -3,7 +3,13 @@ name = "gba"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "gba"
+crate-type = ["staticlib", "rlib"]
+
 [dependencies]
 bincode = { version = "2", features = ["derive"] }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
 cpal = "0.18.1"
 minifb = "0.28.0"
