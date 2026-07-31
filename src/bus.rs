@@ -45,6 +45,9 @@ pub struct Bus {
     pub keyinput: u16,
     /// Debug: counts writes of 0 to IME (used by boot-divergence tracing).
     pub ime_off_count: u32,
+    /// Debug: PC of the currently executing instruction (set by the CPU).
+    pub last_pc: u32,
+    pub pal_trace: bool,
 
     // DMA internal address latches. Hardware latches SAD/DAD on enable and
     // never exposes the incremented values back through the registers.
@@ -90,6 +93,13 @@ impl Bus {
         for (i, w) in irq_stub.iter().enumerate() {
             bios[0x18 + i * 4..0x18 + i * 4 + 4].copy_from_slice(&w.to_le_bytes());
         }
+        // Hardware reset state: the affine parameter registers PA/PD start
+        // at 0x0100 (identity); games can and do rely on this.
+        let mut io = [0u8; 0x800];
+        for base in [0x20usize, 0x26, 0x30, 0x36] {
+            io[base] = 0x00;
+            io[base + 1] = 0x01;
+        }
         Self {
             bios,
             ewram: vec![0; 0x40000],
@@ -97,7 +107,7 @@ impl Bus {
             palette: [0; 0x400],
             vram: vec![0; 0x18000],
             oam: [0; 0x400],
-            io: [0; 0x800],
+            io,
             rom,
             ppu: Ppu::new(),
             ime: false,
@@ -113,6 +123,8 @@ impl Bus {
             timer_frac: [0; 4],
             keyinput: 0x3FF,
             ime_off_count: 0,
+            last_pc: 0,
+            pal_trace: false,
             dma_src: [0; 4],
             dma_dst: [0; 4],
             flash: vec![0xFF; 0x20000],
@@ -478,6 +490,9 @@ impl Bus {
     }
 
     fn raw8(&mut self, addr: u32, val: u8) {
+        if self.pal_trace && (0x02037418..0x02037438).contains(&addr) {
+            eprintln!("palbuf write {:08X} = {:02X} from pc={:08X}", addr, val, self.last_pc);
+        }
         match addr >> 24 {
             0x02 => self.ewram[addr as usize & 0x3FFFF] = val,
             0x03 => self.iwram[addr as usize & 0x7FFF] = val,

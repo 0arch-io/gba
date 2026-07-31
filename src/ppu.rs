@@ -165,6 +165,10 @@ impl Ppu {
         let evy = (r16(0x54) & 0x1F).min(16) as u32;
         let backdrop = u16::from_le_bytes([palette[0], palette[1]]);
 
+        if y == 106 && std::env::var("GBA_OBJDEBUG").is_ok() {
+            let n = obj_line.iter().filter(|p| p.opaque).count();
+            eprintln!("line106: obj opaque={} dispcnt={:04X}", n, dispcnt);
+        }
         for x in 0..WIDTH {
             let xu = x as u32;
             // Determine layer-enable mask and effect-enable for this pixel.
@@ -222,6 +226,12 @@ impl Ppu {
                 }
             }
 
+            if y == 106 && x == 100 && std::env::var("GBA_OBJDEBUG").is_ok() {
+                eprintln!(
+                    "px100: obj(op={} prio={} semi={} col={:04X}) top=({:04X},{}) second=({:04X},{}) mask={:02X} effects={} bldcnt={:04X}",
+                    obj.opaque, obj.prio, obj.semi, obj.color, top.0, top.1, second.0, second.1, mask, effects, bldcnt
+                );
+            }
             // Apply color effects.
             let t1 = bldcnt & (1 << top.1) != 0;
             let t2 = bldcnt & (1 << (8 + second.1)) != 0;

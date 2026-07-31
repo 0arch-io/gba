@@ -28,6 +28,9 @@ pub struct Cpu {
     spsr_irq: u32,
     spsr_und: u32,
     pub halted: bool,
+    /// Active IntrWait target mask: re-halts until the BIOS flag word at
+    /// 0x03007FF8 has one of these bits (set by the game's IRQ handler).
+    intr_wait: Option<u16>,
     pub bus: Bus,
 }
 
@@ -55,6 +58,7 @@ impl Cpu {
             spsr_irq: 0,
             spsr_und: 0,
             halted: false,
+            intr_wait: None,
             bus,
         }
     }
@@ -259,6 +263,19 @@ impl Cpu {
     }
 
     pub fn step(&mut self) {
+        // IntrWait in progress: sleep until the game's IRQ handler flags the
+        // target interrupt in the BIOS scratch word, exactly like the BIOS.
+        if let Some(mask) = self.intr_wait {
+            if self.mode() != 0x12 {
+                let flags = self.bus.read16(0x0300_7FF8);
+                if flags & mask != 0 {
+                    self.bus.write16(0x0300_7FF8, flags & !mask);
+                    self.intr_wait = None;
+                } else {
+                    self.halted = true;
+                }
+            }
+        }
         // IRQ delivery: wakes from halt; taken when IME, IE&IF, and CPSR.I allow.
         let pending = self.bus.ie & self.bus.if_ != 0;
         if pending {
@@ -280,6 +297,7 @@ impl Cpu {
         if self.halted {
             return;
         }
+        self.bus.last_pc = self.regs[15];
         if self.thumb() {
             let op = self.bus.read16(self.regs[15]);
             let pc_before = self.regs[15];
@@ -704,6 +722,19 @@ impl Cpu {
 
     /// High-level emulation of BIOS calls (no BIOS image needed).
     fn hle_swi(&mut self, n: u32) {
+        if std::env::var("GBA_SWILOG").is_ok() {
+            eprintln!("swi {:#04X} r0={:#010X} r1={:#010X} r2={:#010X}", n, self.regs[0], self.regs[1], self.regs[2]);
+        }
+        if n == 0x0B
+            && std::env::var("GBA_BADPTR").is_ok()
+            && !matches!(self.regs[0] >> 24, 0x02 | 0x03 | 0x08..=0x0D)
+        {
+            let caller = self.bus.read32(self.regs[13].wrapping_add(12));
+            eprintln!(
+                "BADPTR CpuSet r0={:#010X} r1={:#010X} caller={:#010X}",
+                self.regs[0], self.regs[1], caller
+            );
+        }
         match n {
             0x00 => { // SoftReset: jump to ROM entry
                 self.regs[15] = 0x0800_0000;
@@ -711,10 +742,22 @@ impl Cpu {
             }
             0x01 => {} // RegisterRamReset: ignore
             0x02 | 0x03 => self.halted = true, // Halt/Stop
-            0x04 => self.halted = true,        // IntrWait: wake on any enabled IRQ
+            0x04 => {
+                // IntrWait(discard_old, mask)
+                let mask = self.regs[1] as u16;
+                if self.regs[0] != 0 {
+                    let flags = self.bus.read16(0x0300_7FF8);
+                    self.bus.write16(0x0300_7FF8, flags & !mask);
+                }
+                self.intr_wait = Some(mask);
+                self.bus.ime = true; // the BIOS forces IME on
+            }
             0x05 => {
-                // VBlankIntrWait: enable vblank in IE-of-interest and halt.
-                self.halted = true;
+                // VBlankIntrWait = IntrWait(1, vblank)
+                let flags = self.bus.read16(0x0300_7FF8);
+                self.bus.write16(0x0300_7FF8, flags & !1);
+                self.intr_wait = Some(1);
+                self.bus.ime = true;
             }
             0x06 => { // Div: r0/r1 -> r0=quot, r1=rem, r3=|quot|
                 let num = self.regs[0] as i32;

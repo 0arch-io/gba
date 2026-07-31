@@ -32,6 +32,7 @@ fn main() -> ExitCode {
         }
     }
     let mut cpu = cpu::Cpu::new(b);
+    cpu.bus.pal_trace = env::var("GBA_PALTRACE").is_ok();
 
     // Region-aware cycles per instruction: IWRAM runs at full speed (the
     // m4a audio mixer lives there and needs the throughput), EWRAM has mild
@@ -76,8 +77,14 @@ fn main() -> ExitCode {
         let mut pc_hist: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
         let capture_audio = env::var("GBA_WAV").is_ok();
         let mut captured: Vec<f32> = Vec::new();
+        let brk: Option<u32> = env::var("GBA_BREAK").ok().and_then(|v| u32::from_str_radix(&v, 16).ok());
+        let mut brk_hits = 0;
         let mut ring: VecDeque<u32> = VecDeque::new();
         while n < frames {
+            if Some(cpu.regs[15]) == brk && brk_hits < 3 {
+                brk_hits += 1;
+                eprintln!("BREAK {:08X}: r0-r7={:08X?}", cpu.regs[15], &cpu.regs[0..8]);
+            }
             let step_cycles = cpi(cpu.regs[15]);
             if trace_boot {
                 ring.push_back(cpu.regs[15]);
@@ -143,7 +150,11 @@ fn main() -> ExitCode {
         eprintln!("palette sum={pal_sum}");
         std::fs::write("vram.bin", &cpu.bus.vram).unwrap();
         std::fs::write("oam.bin", &cpu.bus.oam).unwrap();
+        std::fs::write("io.bin", &cpu.bus.io).unwrap();
         std::fs::write("pal.bin", &cpu.bus.palette).unwrap();
+        std::fs::write("ewram.bin", &cpu.bus.ewram).unwrap();
+        std::fs::write("pal.bin", &cpu.bus.palette).unwrap();
+        std::fs::write("ewram.bin", &cpu.bus.ewram).unwrap();
         return ExitCode::SUCCESS;
     }
 
