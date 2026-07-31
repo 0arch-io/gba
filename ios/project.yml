@@ -17,6 +17,7 @@ targets:
         CURRENT_PROJECT_VERSION: "3"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDisplayName: GBA
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         SWIFT_OBJC_BRIDGING_HEADER: gba_core.h
         LIBRARY_SEARCH_PATHS:
           - "$(SRCROOT)/../target/aarch64-apple-ios-sim/release"
