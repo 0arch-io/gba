@@ -198,7 +198,9 @@ fn main() -> ExitCode {
             cycles += c;
         }
 
-        // Keypad, active low: A=Z B=X Sel=RShift Start=Enter arrows L=A R=S
+        // Keypad, active low: A=Z, B=X, Select=RShift, Start=Enter,
+        // arrows = d-pad, L=Q, R=W. (Letters A/S are deliberately unbound:
+        // players reach for "A" meaning the A button.)
         let k = |key| !window.is_key_down(key) as u16;
         cpu.bus.keyinput = k(Key::Z)
             | k(Key::X) << 1
@@ -208,8 +210,8 @@ fn main() -> ExitCode {
             | k(Key::Left) << 5
             | k(Key::Up) << 6
             | k(Key::Down) << 7
-            | k(Key::S) << 8
-            | k(Key::A) << 9;
+            | k(Key::W) << 8
+            | k(Key::Q) << 9;
 
         {
             let mut q = audio_queue.lock().unwrap();
