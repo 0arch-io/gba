@@ -201,6 +201,7 @@ fn main() -> ExitCode {
     window.set_target_fps(60);
 
     let mut frame_count = 0u64;
+    let mut presented = vec![0u32; ppu::WIDTH * ppu::HEIGHT];
     while window.is_open() && !window.is_key_down(Key::Escape) {
         // Audio-clock pacing: emulate whole frames until the audio queue
         // holds ~100ms, so playback never starves and A/V stay locked to
@@ -216,13 +217,17 @@ fn main() -> ExitCode {
             if audio_ok && queued + cpu.bus.audio.len() >= target {
                 break;
             }
+            // Run to the next completed video frame so the framebuffer is
+            // never presented mid-scanout (that tears during scrolling).
             let mut cycles = 0u64;
-            while cycles < bus::CYCLES_PER_FRAME {
+            while !cpu.bus.frame_ready && cycles < bus::CYCLES_PER_FRAME * 2 {
                 let c = cpi(cpu.regs[15]);
                 cpu.step();
                 cpu.bus.tick(c);
                 cycles += c;
             }
+            cpu.bus.frame_ready = false;
+            presented.copy_from_slice(&cpu.bus.ppu.framebuffer);
         }
 
         // Keypad, active low: A=Z, B=X, Select=RShift, Start=Enter,
@@ -250,9 +255,8 @@ fn main() -> ExitCode {
             }
         }
 
-        cpu.bus.frame_ready = false;
         window
-            .update_with_buffer(&cpu.bus.ppu.framebuffer, ppu::WIDTH, ppu::HEIGHT)
+            .update_with_buffer(&presented, ppu::WIDTH, ppu::HEIGHT)
             .expect("window update failed");
 
         frame_count += 1;
