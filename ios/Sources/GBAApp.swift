@@ -8,6 +8,10 @@ struct GBAApp: App {
             ContentView()
                 .preferredColorScheme(.dark)
                 .statusBarHidden()
+                // Controls live at the screen edges; make system edge
+                // gestures (home indicator etc.) require a second swipe
+                // instead of stealing/delaying the first touch.
+                .defersSystemGestures(on: .all)
         }
     }
 }

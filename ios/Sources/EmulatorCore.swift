@@ -28,7 +28,30 @@ final class EmulatorCore {
     private let stateURL: URL
     private var framesSinceSave = 0
     let lock = NSLock()
-    var pressed = GBAKeys()
+    private var pressed = GBAKeys()
+    // A tap can press+release faster than one emulated frame, so releases are
+    // deferred until the key has been visible to the game for a few frames.
+    private var releaseRequested = GBAKeys()
+    private var framesHeld: [UInt16: Int] = [:]
+    private let minHoldFrames = 3
+
+    /// Mark keys down. Safe to call from any thread.
+    func press(_ keys: GBAKeys) {
+        lock.lock()
+        pressed.insert(keys)
+        releaseRequested.remove(keys)
+        for bit in 0..<10 where keys.rawValue & (1 << bit) != 0 {
+            if framesHeld[1 << bit] == nil { framesHeld[1 << bit] = 0 }
+        }
+        lock.unlock()
+    }
+
+    /// Mark keys up; the actual release happens once `minHoldFrames` have run.
+    func release(_ keys: GBAKeys) {
+        lock.lock()
+        releaseRequested.insert(pressed.intersection(keys))
+        lock.unlock()
+    }
 
     /// `rom` is the validated image (already unzipped if needed); `romURL`
     /// only supplies the name used for save files.
@@ -58,6 +81,16 @@ final class EmulatorCore {
         lock.lock()
         defer { lock.unlock() }
         gba_run_frame(handle, ~pressed.rawValue & 0x3FF)
+        for (bit, n) in framesHeld {
+            let key = GBAKeys(rawValue: bit)
+            if n + 1 >= minHoldFrames, releaseRequested.contains(key) {
+                pressed.remove(key)
+                releaseRequested.remove(key)
+                framesHeld[bit] = nil
+            } else {
+                framesHeld[bit] = n + 1
+            }
+        }
         framesSinceSave += 1
         if framesSinceSave >= 60 {
             framesSinceSave = 0

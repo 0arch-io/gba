@@ -10,3 +10,4 @@ paltrace.txt
 *.bin
 ios/GBA.xcodeproj/
 ios/DerivedData/
+ios/build/
