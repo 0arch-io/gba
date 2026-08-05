@@ -272,6 +272,13 @@ private struct DPad: View {
 
     private let size: CGFloat = 156
     private let arm: CGFloat = 50
+    /// Bigger than it is to leave, so resting near the middle doesn't chatter.
+    private let engageRadius: CGFloat = 20
+    private let releaseRadius: CGFloat = 12
+    /// Cardinals own 70 degrees each, diagonals the 20 between them.
+    private let cardinalHalfWidth: CGFloat = 35
+    /// Extra wedge for the direction already held, so a slide has to be meant.
+    private let stickiness: CGFloat = 12
 
     var body: some View {
         ZStack {
@@ -301,16 +308,7 @@ private struct DPad: View {
                     setKeys([])
                     return
                 }
-                let dx = point.x - size / 2
-                let dy = point.y - size / 2
-                var keys: GBAKeys = []
-                if abs(dx) > 14 {
-                    keys.insert(dx > 0 ? .right : .left)
-                }
-                if abs(dy) > 14 {
-                    keys.insert(dy > 0 ? .down : .up)
-                }
-                setKeys(keys)
+                setKeys(direction(at: point))
             }
         )
         .animation(.easeOut(duration: 0.08), value: active)
@@ -337,6 +335,47 @@ private struct DPad: View {
             .font(.system(size: 15, weight: .heavy))
             .foregroundStyle(.white.opacity(active.contains(key) ? 0.95 : 0.4))
             .offset(x: x * (size / 2 - 20), y: y * (size / 2 - 20))
+    }
+
+    /// Which way the thumb is pointing, by angle rather than by two
+    /// independent axis thresholds.
+    ///
+    /// The old version added a direction whenever the touch drifted 14 points
+    /// off centre on either axis, so holding left with the thumb a little high
+    /// also pressed up — which in a platformer means jumping when you meant to
+    /// walk. Here the four cardinals own a wide 70-degree wedge each and the
+    /// diagonals only the 20 degrees between them, so a diagonal has to be
+    /// deliberate. The wedge for the direction already held is widened, and
+    /// the centre dead zone is larger to leave than to enter, so a thumb
+    /// sliding across the cross doesn't flicker between directions.
+    private func direction(at point: CGPoint) -> GBAKeys {
+        let dx = point.x - size / 2
+        let dy = point.y - size / 2
+        let radius = sqrt(dx * dx + dy * dy)
+        if radius < (active.isEmpty ? engageRadius : releaseRadius) { return [] }
+
+        var angle = atan2(dy, dx) * 180 / .pi // 0 is right, 90 is down
+        if angle < 0 { angle += 360 }
+
+        let cardinals: [(center: CGFloat, keys: GBAKeys)] = [
+            (0, .right), (90, .down), (180, .left), (270, .up),
+        ]
+        for cardinal in cardinals {
+            let halfWidth = active == cardinal.keys ? cardinalHalfWidth + stickiness
+                                                    : cardinalHalfWidth
+            if angleGap(angle, cardinal.center) <= halfWidth { return cardinal.keys }
+        }
+
+        let diagonals: [(center: CGFloat, keys: GBAKeys)] = [
+            (45, [.down, .right]), (135, [.down, .left]),
+            (225, [.up, .left]), (315, [.up, .right]),
+        ]
+        return diagonals.min { angleGap(angle, $0.center) < angleGap(angle, $1.center) }?.keys ?? []
+    }
+
+    private func angleGap(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+        let d = abs(a - b).truncatingRemainder(dividingBy: 360)
+        return d > 180 ? 360 - d : d
     }
 
     private func setKeys(_ keys: GBAKeys) {
