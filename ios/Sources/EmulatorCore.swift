@@ -23,10 +23,16 @@ final class EmulatorCore {
     static let width = 240
     static let height = 160
 
+    /// How many save state slots each game gets.
+    static let stateSlots = 3
+
     private var handle: UnsafeMutableRawPointer
     private let savURL: URL
-    private let stateURL: URL
+    private let stateBase: URL
     private var framesSinceSave = 0
+    /// Emulated frames per frame of audio output. >1 fast-forwards: the extra
+    /// frames' audio is dropped, so the audio clock still paces at real time.
+    private var speed = 1
     let lock = NSLock()
     private var pressed = GBAKeys()
     // A tap can press+release faster than one emulated frame, so releases are
@@ -59,7 +65,15 @@ final class EmulatorCore {
         let base = romURL.deletingPathExtension().lastPathComponent
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         savURL = docs.appendingPathComponent(base + ".sav")
-        stateURL = docs.appendingPathComponent(base + ".state")
+        stateBase = docs.appendingPathComponent(base)
+        // Slots replaced the old single ".state" file; keep that save by
+        // promoting it to slot 1 the first time this game is opened.
+        let legacy = docs.appendingPathComponent(base + ".state")
+        let slotOne = docs.appendingPathComponent(base + ".state1")
+        if FileManager.default.fileExists(atPath: legacy.path),
+           !FileManager.default.fileExists(atPath: slotOne.path) {
+            try? FileManager.default.moveItem(at: legacy, to: slotOne)
+        }
         let sav = (try? Data(contentsOf: savURL)) ?? Data()
         handle = rom.withUnsafeBytes { romBuf in
             sav.withUnsafeBytes { savBuf in
@@ -76,10 +90,31 @@ final class EmulatorCore {
         gba_destroy(handle)
     }
 
-    /// Run one frame and drain its audio into `out`. Returns samples written.
+    /// Fast-forward multiplier; 1 is real time. Safe to call from any thread.
+    func setSpeed(_ multiplier: Int) {
+        lock.lock()
+        speed = Swift.max(1, multiplier)
+        lock.unlock()
+    }
+
+    /// Run a frame (or several, when fast-forwarding) and drain the last
+    /// frame's audio into `out`. Returns samples written.
     func pump(into out: UnsafeMutablePointer<Float>, max: Int) -> Int {
         lock.lock()
         defer { lock.unlock() }
+        // Audio from the skipped-ahead frames is read and thrown away; if it
+        // were left in the core's buffer it would back up and play late.
+        for _ in 1..<speed {
+            advanceFrame()
+            _ = gba_audio_read(handle, out, max)
+        }
+        advanceFrame()
+        return gba_audio_read(handle, out, max)
+    }
+
+    /// One emulated frame plus the bookkeeping that rides along with it.
+    /// Caller must hold `lock`.
+    private func advanceFrame() {
         gba_run_frame(handle, ~pressed.rawValue & 0x3FF)
         for (bit, n) in framesHeld {
             let key = GBAKeys(rawValue: bit)
@@ -96,7 +131,6 @@ final class EmulatorCore {
             framesSinceSave = 0
             writeSaveIfDirty()
         }
-        return gba_audio_read(handle, out, max)
     }
 
     /// Copy the current framebuffer into a CGImage for display.
@@ -124,23 +158,42 @@ final class EmulatorCore {
         try? Data(buf[..<n]).write(to: savURL)
     }
 
-    func saveState() {
+    private func stateURL(_ slot: Int) -> URL {
+        URL(fileURLWithPath: stateBase.path + ".state\(slot)")
+    }
+
+    /// When each slot was last written, for labelling the menu.
+    func stateDate(_ slot: Int) -> Date? {
+        try? FileManager.default
+            .attributesOfItem(atPath: stateURL(slot).path)[.modificationDate] as? Date
+    }
+
+    /// Returns false if the state could not be written; the caller surfaces
+    /// that rather than letting a failed save look like it worked.
+    @discardableResult
+    func saveState(slot: Int) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         let size = gba_state_save(handle, nil, 0)
-        guard size > 0 else { return }
+        guard size > 0 else { return false }
         var buf = [UInt8](repeating: 0, count: size)
         let n = gba_state_save(handle, &buf, size)
-        if n > 0 {
-            try? Data(buf[..<n]).write(to: stateURL)
+        guard n > 0 else { return false }
+        do {
+            try Data(buf[..<n]).write(to: stateURL(slot))
+            return true
+        } catch {
+            NSLog("save state slot \(slot) failed: \(error)")
+            return false
         }
     }
 
-    func loadState() {
-        guard let data = try? Data(contentsOf: stateURL) else { return }
+    @discardableResult
+    func loadState(slot: Int) -> Bool {
+        guard let data = try? Data(contentsOf: stateURL(slot)) else { return false }
         lock.lock()
         defer { lock.unlock() }
-        _ = data.withUnsafeBytes {
+        return data.withUnsafeBytes {
             gba_state_load(handle, $0.bindMemory(to: UInt8.self).baseAddress, data.count)
         }
     }

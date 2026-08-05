@@ -5,9 +5,17 @@ import SwiftUI
 /// TouchCapture (raw UIKit touches) — never SwiftUI gestures.
 struct ControlsOverlay: View {
     let core: EmulatorCore
-    let onSaveState: () -> Void
-    let onLoadState: () -> Void
+    /// A physical pad is attached, so the on-screen buttons only get in the way.
+    let controllerConnected: Bool
+    /// Bumped whenever a slot is written. Slot labels come from the file system
+    /// via `core`, which SwiftUI cannot observe, so without this the menu keeps
+    /// showing "Empty" for a slot that was just saved.
+    let stateRevision: Int
+    let onSaveState: (Int) -> Void
+    let onLoadState: (Int) -> Void
     let onEject: () -> Void
+
+    @State private var turbo = false
 
     var body: some View {
         GeometryReader { geo in
@@ -18,17 +26,58 @@ struct ControlsOverlay: View {
 
     @ViewBuilder
     private func layout(landscape: Bool) -> some View {
-        if landscape {
+        if controllerConnected {
+            // Keep the menu reachable, drop everything the pad replaces.
+            VStack {
+                Spacer()
+                HStack(spacing: 12) {
+                    Spacer()
+                    turboButton
+                    menuButton
+                }
+                .padding(.horizontal, 26)
+                .padding(.bottom, 10)
+            }
+        } else if landscape {
             landscapeLayout
         } else {
             portraitLayout
         }
     }
 
+    /// Fast-forward toggle. Extra frames are emulated per audio frame, so the
+    /// game speeds up while audio keeps pacing at real time.
+    private var turboButton: some View {
+        Button {
+            turbo.toggle()
+            core.setSpeed(turbo ? 3 : 1)
+        } label: {
+            Image(systemName: "forward.fill")
+                .font(.footnote.weight(.bold))
+                .foregroundStyle(turbo ? Color.white : .white.opacity(0.45))
+                .frame(width: 34, height: 26)
+                .background(
+                    Capsule().fill(turbo ? Color.indigo.opacity(0.85) : Color.white.opacity(0.08))
+                )
+                .overlay(
+                    Capsule().strokeBorder(Color.white.opacity(turbo ? 0.3 : 0.10))
+                )
+        }
+    }
+
     private var menuButton: some View {
         Menu {
-            Button("Save State", action: onSaveState)
-            Button("Load State", action: onLoadState)
+            Menu("Save State") {
+                ForEach(1...EmulatorCore.stateSlots, id: \.self) { slot in
+                    Button(slotLabel(slot)) { onSaveState(slot) }
+                }
+            }
+            Menu("Load State") {
+                ForEach(1...EmulatorCore.stateSlots, id: \.self) { slot in
+                    Button(slotLabel(slot)) { onLoadState(slot) }
+                        .disabled(core.stateDate(slot) == nil)
+                }
+            }
             Button("Eject ROM", role: .destructive, action: onEject)
         } label: {
             Image(systemName: "ellipsis")
@@ -44,6 +93,12 @@ struct ControlsOverlay: View {
         }
     }
 
+    /// "Slot 2 · Today 3:14 PM", or "Slot 2 · Empty" when nothing is stored.
+    private func slotLabel(_ slot: Int) -> String {
+        guard let date = core.stateDate(slot) else { return "Slot \(slot) · Empty" }
+        return "Slot \(slot) · \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
+
     /// Landscape: controls live in the gutters beside the screen.
     private var landscapeLayout: some View {
         HStack {
@@ -56,9 +111,14 @@ struct ControlsOverlay: View {
             VStack(spacing: 22) {
                 HoldButton(label: "R", keys: .r, core: core, style: .shoulder(leading: false))
                 ABCluster(core: core)
-                HStack(spacing: 10) {
+                // Stacked, not in one row: a row of Start plus both small
+                // buttons is wider than the gutter and spills over the screen.
+                VStack(spacing: 10) {
                     HoldButton(label: "START", keys: .start, core: core, style: .pill)
-                    menuButton
+                    HStack(spacing: 10) {
+                        turboButton
+                        menuButton
+                    }
                 }
             }
         }
@@ -85,6 +145,7 @@ struct ControlsOverlay: View {
                 HoldButton(label: "SELECT", keys: .select, core: core, style: .pill)
                 HoldButton(label: "START", keys: .start, core: core, style: .pill)
                 Spacer()
+                turboButton
                 menuButton
             }
             .padding(.horizontal, 26)
