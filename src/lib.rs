@@ -3,6 +3,9 @@ pub mod cpu;
 pub mod ppu;
 pub mod psg;
 
+#[cfg(test)]
+mod save_tests;
+
 use std::ffi::c_void;
 
 /// C FFI for embedding the emulator core (iOS app frontend).
@@ -17,8 +20,10 @@ pub extern "C" fn gba_create(
 ) -> *mut c_void {
     let rom = unsafe { std::slice::from_raw_parts(rom, rom_len) }.to_vec();
     let mut b = bus::Bus::new(rom);
-    if !sav.is_null() && sav_len == b.flash.len() {
-        b.flash = unsafe { std::slice::from_raw_parts(sav, sav_len) }.to_vec();
+    if !sav.is_null() && sav_len > 0 {
+        // A blob of the wrong size for the detected save chip is taken on a
+        // best-effort basis; never panic, that would abort the host app.
+        b.load_save(unsafe { std::slice::from_raw_parts(sav, sav_len) });
     }
     Box::into_raw(Box::new(cpu::Cpu::new(b))) as *mut c_void
 }
@@ -71,21 +76,34 @@ pub extern "C" fn gba_audio_read(h: *mut c_void, out: *mut f32, max: usize) -> u
     n
 }
 
-/// True when flash RAM changed since the last `gba_flash_read`.
+/// True when the cartridge save memory changed since the last
+/// `gba_flash_read`, whichever medium the game actually uses.
 #[unsafe(no_mangle)]
 pub extern "C" fn gba_flash_dirty(h: *mut c_void) -> bool {
     let cpu = unsafe { &mut *(h as *mut cpu::Cpu) };
-    cpu.bus.flash_dirty
+    cpu.bus.save_dirty
 }
 
-/// Copy flash RAM (128KB) into `out` and clear the dirty flag.
+/// Copy the cartridge save memory into `out` and clear the dirty flag.
+/// Returns the number of bytes written, which is the true size of the
+/// detected medium (512B/8KB EEPROM, 32KB SRAM, 64KB/128KB flash).
 #[unsafe(no_mangle)]
 pub extern "C" fn gba_flash_read(h: *mut c_void, out: *mut u8, max: usize) -> usize {
     let cpu = unsafe { &mut *(h as *mut cpu::Cpu) };
-    let n = cpu.bus.flash.len().min(max);
-    unsafe { std::ptr::copy_nonoverlapping(cpu.bus.flash.as_ptr(), out, n) };
-    cpu.bus.flash_dirty = false;
+    let n = cpu.bus.save.len().min(max);
+    unsafe { std::ptr::copy_nonoverlapping(cpu.bus.save.as_ptr(), out, n) };
+    cpu.bus.save_dirty = false;
     n
+}
+
+/// Size in bytes of the detected save medium (0 if the handle is null).
+#[unsafe(no_mangle)]
+pub extern "C" fn gba_save_size(h: *mut c_void) -> usize {
+    if h.is_null() {
+        return 0;
+    }
+    let cpu = unsafe { &mut *(h as *mut cpu::Cpu) };
+    cpu.bus.save.len()
 }
 
 /// Serialize the whole machine. Returns bytes written, or 0 on failure /

@@ -25,10 +25,16 @@ fn main() -> ExitCode {
     let save_path = format!("{rom_path}.sav");
     let mut b = bus::Bus::new(rom);
     if let Ok(sav) = std::fs::read(&save_path) {
-        if sav.len() == b.flash.len() {
-            b.flash = sav;
+        if !b.load_save(&sav) {
+            eprintln!(
+                "warning: {save_path} is {} bytes but this cartridge has {} ({}); loaded anyway",
+                sav.len(),
+                b.save.len(),
+                b.save_type.name()
+            );
         }
     }
+    eprintln!("save type: {}", b.save_type.name());
     let mut cpu = cpu::Cpu::new(b);
     cpu.bus.pal_trace = env::var("GBA_PALTRACE").is_ok();
 
@@ -146,6 +152,15 @@ fn main() -> ExitCode {
             eprintln!("vram[{blk}] sum={s}");
         }
         eprintln!("palette sum={pal_sum}");
+        let written = cpu.bus.save.iter().filter(|&&b| b != 0xFF).count();
+        eprintln!(
+            "save: {} ({} bytes, dirty={}, {} bytes programmed)",
+            cpu.bus.save_type.name(),
+            cpu.bus.save.len(),
+            cpu.bus.save_dirty,
+            written
+        );
+        std::fs::write("save.bin", &cpu.bus.save).unwrap();
         std::fs::write("vram.bin", &cpu.bus.vram).unwrap();
         std::fs::write("oam.bin", &cpu.bus.oam).unwrap();
         std::fs::write("io.bin", &cpu.bus.io).unwrap();
@@ -290,13 +305,13 @@ fn main() -> ExitCode {
             .expect("window update failed");
 
         frame_count += 1;
-        if frame_count % 60 == 0 && cpu.bus.flash_dirty {
-            cpu.bus.flash_dirty = false;
-            let _ = std::fs::write(&save_path, &cpu.bus.flash);
+        if frame_count % 60 == 0 && cpu.bus.save_dirty {
+            cpu.bus.save_dirty = false;
+            let _ = std::fs::write(&save_path, &cpu.bus.save);
         }
     }
-    if cpu.bus.flash_dirty {
-        let _ = std::fs::write(&save_path, &cpu.bus.flash);
+    if cpu.bus.save_dirty {
+        let _ = std::fs::write(&save_path, &cpu.bus.save);
     }
     ExitCode::SUCCESS
 }

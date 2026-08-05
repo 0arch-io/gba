@@ -14,6 +14,88 @@ const IRQ_VCOUNT: u16 = 1 << 2;
 const IRQ_TIMER0: u16 = 1 << 3;
 const IRQ_DMA0: u16 = 1 << 8;
 
+/// Which battery-backed save chip the cartridge carries. Detected from the
+/// ASCII marker the SDK leaves in the ROM image (see `detect_save_type`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
+pub enum SaveType {
+    /// 32KB static RAM at 0x0E000000, plain 8-bit reads and writes.
+    Sram,
+    /// 64KB flash, one bank, Panasonic MN63F805MNP (0x32 / 0x1B).
+    Flash64,
+    /// 128KB flash, two 64KB banks, Sanyo LE26FV10N1TS (0x62 / 0x13).
+    Flash128,
+    /// 512 byte serial EEPROM, 6-bit block address.
+    Eeprom512,
+    /// 8KB serial EEPROM, 14-bit block address.
+    Eeprom8k,
+    /// EEPROM of not-yet-known size; resolved by the first DMA3 transfer.
+    EepromUnknown,
+}
+
+impl SaveType {
+    /// Size in bytes of the save medium (and therefore of the .sav file).
+    pub fn size(self) -> usize {
+        match self {
+            SaveType::Sram => 0x8000,
+            SaveType::Flash64 => 0x10000,
+            SaveType::Flash128 => 0x20000,
+            SaveType::Eeprom512 => 512,
+            // Provisional until the transfer width settles it; nothing can be
+            // written before that happens, so the .sav is never this size.
+            SaveType::Eeprom8k | SaveType::EepromUnknown => 8192,
+        }
+    }
+
+    pub fn is_eeprom(self) -> bool {
+        matches!(
+            self,
+            SaveType::Eeprom512 | SaveType::Eeprom8k | SaveType::EepromUnknown
+        )
+    }
+
+    pub fn is_flash(self) -> bool {
+        matches!(self, SaveType::Flash64 | SaveType::Flash128)
+    }
+
+    /// Byte the medium is erased to (flash erases to 0xFF; SRAM/EEPROM start
+    /// blank, but 0xFF is what a fresh cartridge reads back as either way).
+    fn fill(self) -> u8 {
+        0xFF
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SaveType::Sram => "SRAM 32KB",
+            SaveType::Flash64 => "Flash 64KB",
+            SaveType::Flash128 => "Flash 128KB",
+            SaveType::Eeprom512 => "EEPROM 512B",
+            SaveType::Eeprom8k => "EEPROM 8KB",
+            SaveType::EepromUnknown => "EEPROM (size pending)",
+        }
+    }
+}
+
+/// Scan a ROM image for the save-hardware marker string the Nintendo SDK
+/// links into every commercial cartridge, e.g. "FLASH1M_V103". The first
+/// marker in address order wins; the six strings have no common prefixes so
+/// the match is unambiguous.
+pub fn detect_save_type(rom: &[u8]) -> SaveType {
+    for (i, &c) in rom.iter().enumerate() {
+        let at = |pat: &[u8]| rom.len() - i >= pat.len() && &rom[i..i + pat.len()] == pat;
+        match c {
+            b'E' if at(b"EEPROM_V") => return SaveType::EepromUnknown,
+            b'S' if at(b"SRAM_V") || at(b"SRAM_F_V") => return SaveType::Sram,
+            b'F' if at(b"FLASH1M_V") => return SaveType::Flash128,
+            b'F' if at(b"FLASH512_V") || at(b"FLASH_V") => return SaveType::Flash64,
+            _ => {}
+        }
+    }
+    // No marker (homebrew, prototypes, trimmed dumps): assume the largest
+    // flash part, which is what this emulator shipped with before detection
+    // existed and is harmless for a game that never touches the save region.
+    SaveType::Flash128
+}
+
 #[derive(bincode::Encode, bincode::Decode)]
 pub struct Bus {
     pub bios: Vec<u8>,
@@ -57,15 +139,25 @@ pub struct Bus {
     dma_src: [u32; 4],
     dma_dst: [u32; 4],
 
-    // 128KB flash (two 64KB banks) with the standard command protocol.
-    pub flash: Vec<u8>,
+    // Battery-backed save. `save` is always exactly `save_type.size()` bytes.
+    pub save_type: SaveType,
+    pub save: Vec<u8>,
+    pub save_dirty: bool,
+
+    // Flash command-protocol state (64KB and 128KB parts share it).
     flash_bank: usize,
     flash_state: u8, // 0 idle, 1 got AA, 2 got 55
     flash_id_mode: bool,
     flash_erase_mode: bool,
     flash_write_byte: bool,
     flash_bank_select: bool,
-    pub flash_dirty: bool,
+
+    // EEPROM bit-serial protocol state.
+    ee_addr_bits: u8, // 0 = not yet known, else 6 or 14
+    ee_buf: Vec<u8>,  // command bits received so far, one per element
+    ee_reading: bool,
+    ee_out: u32,        // bits already shifted out of the current read
+    ee_read_off: usize, // byte offset of the block being read
 
     // DirectSound: two FIFO channels fed by timer-paced DMA1/DMA2.
     fifo_a: std::collections::VecDeque<i8>,
@@ -103,6 +195,7 @@ impl Bus {
             io[base] = 0x00;
             io[base + 1] = 0x01;
         }
+        let save_type = detect_save_type(&rom);
         Self {
             bios,
             ewram: vec![0; 0x40000],
@@ -131,14 +224,20 @@ impl Bus {
             pal_trace: false,
             dma_src: [0; 4],
             dma_dst: [0; 4],
-            flash: vec![0xFF; 0x20000],
+            save_type,
+            save: vec![save_type.fill(); save_type.size()],
+            save_dirty: false,
             flash_bank: 0,
             flash_state: 0,
             flash_id_mode: false,
             flash_erase_mode: false,
             flash_write_byte: false,
             flash_bank_select: false,
-            flash_dirty: false,
+            ee_addr_bits: 0,
+            ee_buf: Vec::new(),
+            ee_reading: false,
+            ee_out: 0,
+            ee_read_off: 0,
             fifo_a: std::collections::VecDeque::new(),
             fifo_b: std::collections::VecDeque::new(),
             sample_a: 0,
@@ -348,6 +447,11 @@ impl Bus {
             if count == 0 {
                 count = if ch == 3 { 0x10000 } else { 0x4000 };
             }
+            // EEPROM is clocked bit-serially by DMA3. The length of the first
+            // transfer into the chip is what reveals its address width.
+            if ch == 3 && dst >> 24 == 0x0D && self.eeprom_selected(dst) {
+                self.eeprom_dma_begin(count);
+            }
             let word = cnt & 0x0400 != 0;
             let unit = if word { 4u32 } else { 2 };
             let dst_ctl = cnt >> 5 & 3;
@@ -429,31 +533,89 @@ impl Bus {
         if a >= 0x18000 { a - 0x8000 } else { a }
     }
 
+    /// Adopt a previously written .sav blob. A blob whose length does not
+    /// match the detected medium is taken on a best-effort basis rather than
+    /// rejected or, worse, allowed to panic: a Rust panic aborts the host app.
+    /// Returns true when the blob matched the medium exactly.
+    pub fn load_save(&mut self, data: &[u8]) -> bool {
+        // An existing EEPROM save settles the 512B / 8KB question by itself.
+        if self.save_type == SaveType::EepromUnknown {
+            match data.len() {
+                512 => self.set_save_type(SaveType::Eeprom512),
+                8192 => self.set_save_type(SaveType::Eeprom8k),
+                _ => {}
+            }
+        }
+        let n = data.len().min(self.save.len());
+        self.save[..n].copy_from_slice(&data[..n]);
+        for b in self.save[n..].iter_mut() {
+            *b = 0xFF;
+        }
+        data.len() == self.save.len()
+    }
+
+    fn set_save_type(&mut self, t: SaveType) {
+        if self.save_type == t {
+            return;
+        }
+        self.save_type = t;
+        self.save.resize(t.size(), t.fill());
+        self.ee_addr_bits = match t {
+            SaveType::Eeprom512 => 6,
+            SaveType::Eeprom8k => 14,
+            _ => self.ee_addr_bits,
+        };
+    }
+
+    // ---- Flash (64KB single bank, or 128KB in two banks) ----
+
+    fn flash_offset(&self, a: usize) -> usize {
+        let off = if self.save_type == SaveType::Flash128 {
+            self.flash_bank * 0x10000 + a
+        } else {
+            a & 0xFFFF
+        };
+        // Never index past the buffer, whatever the game does.
+        if off < self.save.len() { off } else { off % self.save.len().max(1) }
+    }
+
     fn flash_read(&self, addr: u32) -> u8 {
         let a = addr as usize & 0xFFFF;
         if self.flash_id_mode {
-            // Sanyo 128K: manufacturer 0x62, device 0x13.
-            return if a == 0 {
-                0x62
-            } else if a == 1 {
-                0x13
+            // Sanyo 128K: 0x62/0x13. Panasonic 64K: 0x32/0x1B.
+            let (man, dev) = if self.save_type == SaveType::Flash128 {
+                (0x62, 0x13)
             } else {
-                0xFF
+                (0x32, 0x1B)
+            };
+            return match a {
+                0 => man,
+                1 => dev,
+                _ => 0xFF,
             };
         }
-        self.flash[self.flash_bank * 0x10000 + a]
+        self.save.get(self.flash_offset(a)).copied().unwrap_or(0xFF)
     }
 
     fn flash_write(&mut self, addr: u32, val: u8) {
         let a = addr as usize & 0xFFFF;
         if self.flash_write_byte {
-            self.flash[self.flash_bank * 0x10000 + a] &= val; // program clears bits
+            let off = self.flash_offset(a);
+            if let Some(b) = self.save.get_mut(off) {
+                *b &= val; // programming can only clear bits
+            }
             self.flash_write_byte = false;
-            self.flash_dirty = true;
+            self.save_dirty = true;
+            if std::env::var("GBA_SAVELOG").is_ok() {
+                eprintln!("flash program {:05X} = {:02X}", off, val);
+            }
             return;
         }
         if self.flash_bank_select && a == 0 {
-            self.flash_bank = (val & 1) as usize;
+            // Only the 128KB part has a second bank.
+            if self.save_type == SaveType::Flash128 {
+                self.flash_bank = (val & 1) as usize;
+            }
             self.flash_bank_select = false;
             return;
         }
@@ -467,9 +629,9 @@ impl Bus {
                     0xF0 => self.flash_id_mode = false,
                     0x80 => self.flash_erase_mode = true,
                     0x10 if self.flash_erase_mode => {
-                        self.flash.fill(0xFF);
+                        self.save.fill(0xFF);
                         self.flash_erase_mode = false;
-                        self.flash_dirty = true;
+                        self.save_dirty = true;
                     }
                     0xA0 => self.flash_write_byte = true,
                     0xB0 => self.flash_bank_select = true,
@@ -478,17 +640,124 @@ impl Bus {
             }
             (2, _, 0x30) if self.flash_erase_mode => {
                 // 4KB sector erase
-                let start = self.flash_bank * 0x10000 + (a & 0xF000);
-                self.flash[start..start + 0x1000].fill(0xFF);
+                let start = self.flash_offset(a & 0xF000);
+                let end = (start + 0x1000).min(self.save.len());
+                if start < end {
+                    self.save[start..end].fill(0xFF);
+                }
                 self.flash_erase_mode = false;
                 self.flash_state = 0;
-                self.flash_dirty = true;
+                self.save_dirty = true;
             }
             _ => self.flash_state = 0,
         }
     }
 
-    pub fn read8(&self, addr: u32) -> u8 {
+    // ---- EEPROM (bit-serial, driven by DMA3 through the 0x0D region) ----
+
+    /// True when `addr` decodes to the EEPROM chip rather than a ROM mirror.
+    /// Cartridges larger than 16MB only expose EEPROM in the last 256 bytes
+    /// of the 0x0D region; smaller ones answer anywhere in it.
+    fn eeprom_selected(&self, addr: u32) -> bool {
+        self.save_type.is_eeprom()
+            && (self.rom.len() <= 0x0100_0000 || addr & 0x00FF_FF00 == 0x00FF_FF00)
+    }
+
+    /// A DMA3 transfer of `count` halfwords into the EEPROM is starting.
+    ///
+    /// Hardware deselects the chip between transfers, so the command shift
+    /// register starts empty each time; without that a single malformed
+    /// stream would desync the chip forever.
+    ///
+    /// The transfer length is also what distinguishes the 6-bit part from the
+    /// 14-bit one: a read request is 2+n+1 bits and a write is 2+n+64+1, so
+    /// 9/73 means 6-bit and 17/81 means 14-bit. (Some SDKs omit the trailing
+    /// stop bit, hence 72/80 too.)
+    pub fn eeprom_dma_begin(&mut self, count: u32) {
+        self.ee_buf.clear();
+        if self.ee_addr_bits != 0 {
+            return;
+        }
+        match count {
+            9 | 72 | 73 => self.set_save_type(SaveType::Eeprom512),
+            17 | 80 | 81 => self.set_save_type(SaveType::Eeprom8k),
+            _ => {}
+        }
+    }
+
+    fn eeprom_block_offset(&self, block: usize) -> usize {
+        let blocks = (self.save.len() / 8).max(1);
+        (block % blocks) * 8
+    }
+
+    fn eeprom_write_bit(&mut self, bit: u8) {
+        if self.ee_addr_bits == 0 {
+            // Nothing told us the width yet; 6-bit is the safer guess because
+            // a 14-bit game always issues a 17- or 81-halfword transfer first.
+            self.set_save_type(SaveType::Eeprom512);
+        }
+        let n = self.ee_addr_bits as usize;
+        self.ee_buf.push(bit & 1);
+        // Every command starts with a 1; a leading 0 is the stop bit of the
+        // previous request, so drop it and stay in sync.
+        if self.ee_buf[0] == 0 {
+            self.ee_buf.clear();
+            return;
+        }
+        if self.ee_buf.len() < 2 {
+            return;
+        }
+        let bits = |s: &[u8]| s.iter().fold(0usize, |a, &b| a << 1 | b as usize);
+        if self.ee_buf[1] == 1 {
+            // "11" = read request: address, then the game clocks the data out.
+            if self.ee_buf.len() == 2 + n {
+                let block = bits(&self.ee_buf[2..]);
+                self.ee_read_off = self.eeprom_block_offset(block);
+                self.ee_reading = true;
+                self.ee_out = 0;
+                self.ee_buf.clear();
+            }
+        } else if self.ee_buf.len() == 2 + n + 64 {
+            // "10" = write request: address followed by 64 data bits.
+            let block = bits(&self.ee_buf[2..2 + n]);
+            let off = self.eeprom_block_offset(block);
+            for i in 0..8 {
+                let byte = bits(&self.ee_buf[2 + n + i * 8..2 + n + i * 8 + 8]) as u8;
+                if let Some(b) = self.save.get_mut(off + i) {
+                    *b = byte;
+                }
+            }
+            self.save_dirty = true;
+            self.ee_buf.clear();
+        } else if self.ee_buf.len() > 2 + n + 64 {
+            self.ee_buf.clear(); // desynced; resynchronise on the next command
+        }
+    }
+
+    fn eeprom_read_bit(&mut self) -> u8 {
+        if !self.ee_reading {
+            return 1; // idle chip reads back as ready
+        }
+        let i = self.ee_out;
+        self.ee_out += 1;
+        if i < 4 {
+            return 0; // four dummy bits precede the data
+        }
+        let b = (i - 4) as usize;
+        if b >= 64 {
+            self.ee_reading = false;
+            return 1;
+        }
+        if b == 63 {
+            self.ee_reading = false;
+        }
+        let byte = self.save.get(self.ee_read_off + b / 8).copied().unwrap_or(0xFF);
+        byte >> (7 - b % 8) & 1
+    }
+
+    /// Byte read. Takes `&mut self` because reading the EEPROM region clocks
+    /// the chip's serial output on, which is a side effect.
+    pub fn read8(&mut self, addr: u32) -> u8 {
         match addr >> 24 {
             0x00 => *self.bios.get(addr as usize & 0x3FFF).unwrap_or(&0),
             0x02 => self.ewram[addr as usize & 0x3FFFF],
@@ -497,11 +766,21 @@ impl Bus {
             0x05 => self.palette[addr as usize & 0x3FF],
             0x06 => self.vram[Self::vram_idx(addr)],
             0x07 => self.oam[addr as usize & 0x3FF],
+            0x0D if self.eeprom_selected(addr) => {
+                // One data bit per halfword, in bit 0 of the low byte.
+                if addr & 1 == 0 { self.eeprom_read_bit() } else { 0 }
+            }
             0x08..=0x0D => {
                 let idx = (addr & 0x01FF_FFFF) as usize;
                 *self.rom.get(idx).unwrap_or(&0xFF)
             }
-            0x0E | 0x0F => self.flash_read(addr),
+            0x0E | 0x0F => match self.save_type {
+                SaveType::Sram => {
+                    self.save.get(addr as usize & 0x7FFF).copied().unwrap_or(0xFF)
+                }
+                t if t.is_flash() => self.flash_read(addr),
+                _ => 0xFF, // EEPROM carts leave this region unmapped
+            },
             _ => 0,
         }
     }
@@ -517,7 +796,25 @@ impl Bus {
             0x05 => self.palette[addr as usize & 0x3FF] = val,
             0x06 => self.vram[Self::vram_idx(addr)] = val,
             0x07 => self.oam[addr as usize & 0x3FF] = val,
-            0x0E | 0x0F => self.flash_write(addr, val),
+            0x0D if self.eeprom_selected(addr) => {
+                // One command bit per halfword; ignore the high byte.
+                if addr & 1 == 0 {
+                    self.eeprom_write_bit(val);
+                }
+            }
+            0x0E | 0x0F => match self.save_type {
+                SaveType::Sram => {
+                    let i = addr as usize & 0x7FFF;
+                    if let Some(b) = self.save.get_mut(i) {
+                        if *b != val {
+                            *b = val;
+                            self.save_dirty = true;
+                        }
+                    }
+                }
+                t if t.is_flash() => self.flash_write(addr, val),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -551,12 +848,26 @@ impl Bus {
         }
     }
 
-    pub fn read16(&self, addr: u32) -> u16 {
+    /// True when this address sits on the cartridge's 8-bit SRAM bus, where a
+    /// wider access sees one byte replicated instead of consecutive bytes.
+    fn sram_bus(&self, addr: u32) -> bool {
+        self.save_type == SaveType::Sram && matches!(addr >> 24, 0x0E | 0x0F)
+    }
+
+    pub fn read16(&mut self, addr: u32) -> u16 {
+        if self.sram_bus(addr) {
+            let b = self.read8(addr) as u16;
+            return b | b << 8;
+        }
         let a = addr & !1;
         u16::from_le_bytes([self.read8(a), self.read8(a + 1)])
     }
 
-    pub fn read32(&self, addr: u32) -> u32 {
+    pub fn read32(&mut self, addr: u32) -> u32 {
+        if self.sram_bus(addr) {
+            let b = self.read8(addr) as u32;
+            return b * 0x0101_0101;
+        }
         let a = addr & !3;
         u32::from_le_bytes([
             self.read8(a),
@@ -567,6 +878,11 @@ impl Bus {
     }
 
     pub fn write16(&mut self, addr: u32, val: u16) {
+        if self.sram_bus(addr) {
+            // Only the byte lane matching the address reaches the chip.
+            self.raw8(addr, (val >> ((addr & 1) * 8)) as u8);
+            return;
+        }
         let a = addr & !1;
         let [b0, b1] = val.to_le_bytes();
         self.raw8(a, b0);
@@ -574,6 +890,10 @@ impl Bus {
     }
 
     pub fn write32(&mut self, addr: u32, val: u32) {
+        if self.sram_bus(addr) {
+            self.raw8(addr, (val >> ((addr & 3) * 8)) as u8);
+            return;
+        }
         let a = addr & !3;
         for (i, b) in val.to_le_bytes().iter().enumerate() {
             self.raw8(a + i as u32, *b);
