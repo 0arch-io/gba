@@ -950,6 +950,69 @@ impl Cpu {
                     }
                 }
             }
+            0x13 => {
+                // HuffUnComp. Kirby packs its pause-screen graphics this way,
+                // and ignoring the call leaves whatever was in the destination
+                // buffer to be copied to VRAM as garbage.
+                //
+                // Header word: bits 0-3 symbol width in bits (4 or 8), bits
+                // 8-31 decompressed size in bytes. Then a tree-size byte, the
+                // tree, and finally the bitstream in 32-bit words, MSB first.
+                let src = self.regs[0];
+                let mut dst = self.regs[1];
+                let header = self.bus.read32(src);
+                let symbol_bits = header & 0xF;
+                let mut remaining = header >> 8;
+
+                // The tree-size byte sits at src+4 and counts (size/2 - 1),
+                // so it doubles as the offset from itself to the bitstream.
+                let tree_size_addr = src + 4;
+                let tree_root = tree_size_addr + 1;
+                let mut stream = tree_size_addr + (self.bus.read8(tree_size_addr) as u32 + 1) * 2;
+
+                let mut node_addr = tree_root;
+                let mut node = self.bus.read8(node_addr);
+                let mut word = self.bus.read32(stream);
+                stream += 4;
+                let mut bits_left = 32;
+                let mut out: u32 = 0;
+                let mut out_bits = 0;
+
+                while remaining > 0 {
+                    if bits_left == 0 {
+                        word = self.bus.read32(stream);
+                        stream += 4;
+                        bits_left = 32;
+                    }
+                    let bit = word >> 31 & 1;
+                    word <<= 1;
+                    bits_left -= 1;
+
+                    // Children sit at (node & ~1) + offset*2 + 2, right one
+                    // first; the parent says whether each child is a leaf.
+                    let child = (node_addr & !1) + (node as u32 & 0x3F) * 2 + 2 + bit;
+                    let leaf = if bit == 1 { node & 0x40 != 0 } else { node & 0x80 != 0 };
+                    node_addr = child;
+                    node = self.bus.read8(node_addr);
+
+                    if leaf {
+                        // Symbols fill the output word from the top down, so
+                        // the first symbol decoded lands in the low bits.
+                        let symbol = if symbol_bits == 4 { node as u32 & 0xF } else { node as u32 };
+                        out = (out >> symbol_bits) | (symbol << (32 - symbol_bits));
+                        out_bits += symbol_bits;
+                        if out_bits == 32 {
+                            self.bus.write32(dst, out);
+                            dst += 4;
+                            out = 0;
+                            out_bits = 0;
+                            remaining = remaining.saturating_sub(4);
+                        }
+                        node_addr = tree_root;
+                        node = self.bus.read8(node_addr);
+                    }
+                }
+            }
             0x14 | 0x15 => {
                 // RLUnCompWram / RLUnCompVram
                 let mut src = self.regs[0];
@@ -979,7 +1042,14 @@ impl Cpu {
                     }
                 }
             }
-            _ => {} // unimplemented BIOS call: ignore
+            n => {
+                // Unimplemented BIOS call. Ignoring one silently leaves the
+                // caller's destination buffer untouched, which shows up as
+                // garbage on screen rather than as an error, so log it.
+                if std::env::var("GBA_SWILOG").is_ok() {
+                    eprintln!("unimplemented SWI {n:#04X} r0={:08X} r1={:08X}", self.regs[0], self.regs[1]);
+                }
+            }
         }
     }
 

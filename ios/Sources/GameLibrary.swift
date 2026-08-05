@@ -99,8 +99,11 @@ enum GameLibrary {
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: 0xC0), data.count >= 0xC0 else { return nil }
 
-        let title = ascii(data[0xA0..<0xAC])
+        var title = ascii(data[0xA0..<0xAC])
         let code = ascii(data[0xAC..<0xB0])
+        // Some headers carry the console's own prefix ("AGB KIRBY DX"), which
+        // is noise in a list of games.
+        if title.hasPrefix("AGB ") { title.removeFirst(4) }
         guard !title.isEmpty else { return nil }
         // Header titles are all caps ("POKEMON FIRE"); title case reads better.
         return (title.capitalized, code)

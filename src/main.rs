@@ -77,6 +77,8 @@ fn main() -> ExitCode {
             })
             .collect();
         let mut n = 0;
+        let dump_every: Option<u32> = env::var("GBA_DUMP_EVERY").ok().and_then(|v| v.parse().ok());
+        let dump_dir = env::var("GBA_DUMP_DIR").unwrap_or_else(|_| "filmstrip".into());
         let trace_boot = env::var("GBA_BOOTTRACE").is_ok();
         let mut pc_hist: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
         let capture_audio = env::var("GBA_WAV").is_ok();
@@ -116,6 +118,17 @@ fn main() -> ExitCode {
                     cpu.bus.audio.clear();
                 }
                 n += 1;
+                // GBA_DUMP_EVERY=K writes frameNNNNN.ppm into GBA_DUMP_DIR so
+                // one run gives a filmstrip to find where a picture goes wrong.
+                if let Some(k) = dump_every {
+                    if k > 0 && n % k == 0 {
+                        let _ = std::fs::create_dir_all(&dump_dir);
+                        dump_frame(
+                            &cpu.bus.ppu.framebuffer,
+                            &format!("{dump_dir}/frame{n:05}.ppm"),
+                        );
+                    }
+                }
                 let mut held = 0u16;
                 for &(a, b, bits) in &script {
                     if n >= a && n < b {
