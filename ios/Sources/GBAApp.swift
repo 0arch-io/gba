@@ -19,8 +19,8 @@ struct GBAApp: App {
 struct ContentView: View {
     @State private var core: EmulatorCore?
     @State private var audio: AudioEngine?
+    @State private var games: [Game] = []
     @State private var showPicker = false
-    @State private var lastROM: URL?
     @State private var loadError: String?
 
     var body: some View {
@@ -53,39 +53,24 @@ struct ContentView: View {
                                 onLoadState: { core.loadState() },
                                 onEject: { eject() })
             } else {
-                VStack(spacing: 24) {
-                    Text("GBA")
-                        .font(.system(size: 56, weight: .heavy, design: .rounded))
-                        .foregroundStyle(.white)
-                    Text("A Game Boy Advance emulator")
-                        .foregroundStyle(.secondary)
-                    Button {
-                        showPicker = true
-                    } label: {
-                        Label("Open ROM", systemImage: "folder")
-                            .font(.title3.bold())
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 12)
-                            .background(Color.indigo, in: Capsule())
-                            .foregroundStyle(.white)
-                    }
-                }
+                LibraryView(
+                    games: games,
+                    onPlay: { play($0) },
+                    onImport: { showPicker = true },
+                    onDelete: { delete($0) }
+                )
             }
         }
         .fileImporter(isPresented: $showPicker, allowedContentTypes: [.data]) { result in
             guard case .success(let url) = result else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
-                // Unzips and validates before anything touches the core.
-                let rom = try ROMLoader.load(from: url)
-                // Store the extracted image in Documents so saves and the
-                // resume-last-ROM path have a stable location.
-                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                let name = (url.deletingPathExtension().lastPathComponent) + ".gba"
-                let local = docs.appendingPathComponent(name)
-                try rom.write(to: local)
-                start(rom: rom, url: local)
+                // Unzips and validates before anything is written or played.
+                let stored = try GameLibrary.importROM(from: url)
+                // Use the fresh scan directly: reading `games` back straight
+                // after assigning it isn't guaranteed to see the new value.
+                let scanned = GameLibrary.scan()
+                games = scanned
+                if let game = scanned.first(where: { $0.url == stored }) { play(game) }
             } catch {
                 loadError = error.localizedDescription
             }
@@ -95,34 +80,39 @@ struct ContentView: View {
         } message: {
             Text(loadError ?? "")
         }
-        .onAppear { autoStart() }
+        .onAppear { refresh() }
     }
 
-    private func autoStart() {
-        // Resume the most recently used ROM if present.
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let roms = (try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: [.contentModificationDateKey]))?
-            .filter { ["gba", "zip"].contains($0.pathExtension.lowercased()) }
-            .sorted { a, b in
-                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return da > db
-            } ?? []
-        if let url = roms.first, let data = try? ROMLoader.load(from: url) {
-            start(rom: data, url: url)
+    private func refresh() {
+        games = GameLibrary.scan()
+    }
+
+    private func play(_ game: Game) {
+        do {
+            let rom = try ROMLoader.load(from: game.url)
+            guard let c = EmulatorCore(rom: rom, romURL: game.url) else {
+                loadError = "That game couldn't be started."
+                return
+            }
+            GameLibrary.markPlayed(game.url)
+            core = c
+            audio = AudioEngine(core: c)
+        } catch {
+            loadError = error.localizedDescription
         }
     }
 
-    private func start(rom: Data, url: URL) {
-        guard let c = EmulatorCore(rom: rom, romURL: url) else { return }
-        lastROM = url
-        core = c
-        audio = AudioEngine(core: c)
+    private func delete(_ game: Game) {
+        GameLibrary.delete(game)
+        refresh()
     }
 
     private func eject() {
         audio?.stop()
         audio = nil
         core = nil
+        // Ordering matters: the core writes its battery save on deinit, so
+        // rescan afterwards to pick up a save file created just now.
+        refresh()
     }
 }
