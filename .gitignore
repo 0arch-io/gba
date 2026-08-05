@@ -8,6 +8,12 @@ refprobe
 *.c
 paltrace.txt
 *.bin
+*.raw
+*.gba
+*.gb
+*.gbc
+*.sav
+*.zip
 ios/GBA.xcodeproj/
 ios/DerivedData/
 ios/build/
