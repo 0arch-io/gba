@@ -11,8 +11,12 @@ cargo build --release
 ./target/release/gba <rom.gba>
 ```
 
-Battery saves are written to `<rom>.gba.sav` next to the ROM (128KB flash,
-Sanyo protocol). Save states go to `<rom>.gba.state`.
+Battery saves are written to `<rom>.gba.sav` next to the ROM. The save
+hardware is detected from the marker string the SDK leaves in the ROM
+(`EEPROM_V`, `SRAM_V`, `SRAM_F_V`, `FLASH_V`, `FLASH512_V`, `FLASH1M_V`), so
+the .sav is 512B, 8KB, 32KB, 64KB or 128KB depending on the cartridge; the
+emulator prints which one it picked at startup. Save states go to
+`<rom>.gba.state`.
 
 ## Controls
 
@@ -40,7 +44,11 @@ Sanyo protocol). Save states go to `<rom>.gba.state`.
   timers with cascade, keypad
 - Audio: both DirectSound FIFO channels plus the four PSG channels,
   low-pass filtered, audio-clock-paced frontend (no drift stutter)
-- 128KB flash saves, save states, fast-forward, pause
+- All four save media with auto-detection: 32KB SRAM, 64KB flash
+  (Panasonic 0x32/0x1B), 128KB flash in two banks (Sanyo 0x62/0x13), and
+  bit-serial EEPROM over DMA3 in both the 512B (6-bit address) and 8KB
+  (14-bit address) variants, the width inferred from the transfer length
+- Save states, fast-forward, pause
 
 ## Verification tools
 
@@ -52,7 +60,8 @@ Sanyo protocol). Save states go to `<rom>.gba.state`.
 - `refprobe.c` links against libmgba (brew mgba) to run the same script in
   mGBA and dump memory + a reference frame for ground-truth diffs
 - Debug hooks behind env vars: `GBA_SWILOG`, `GBA_IOLOG`, `GBA_MODELOG`,
-  `GBA_BOOTTRACE`, `GBA_PALTRACE`, `GBA_BADPTR`, `GBA_OBJDEBUG`, `GBA_BREAK`
+  `GBA_BOOTTRACE`, `GBA_PALTRACE`, `GBA_BADPTR`, `GBA_OBJDEBUG`, `GBA_BREAK`,
+  `GBA_SAVELOG`
 
 ## Known gaps
 
@@ -60,3 +69,7 @@ Sanyo protocol). Save states go to `<rom>.gba.state`.
 - Timing is region-approximate (IWRAM 1 / EWRAM 3 / ROM 4 cycles per
   instruction), no prefetch or sub-instruction memory timing
 - Mode 1/2 affine backgrounds are lightly exercised
+- A ROM with no save marker at all falls back to 128KB flash
+- `cargo test` covers the save controllers (detection, the flash command
+  protocol, the EEPROM bit protocol, .sav sizing); only the 128KB flash path
+  has been exercised against a real game
