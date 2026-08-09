@@ -72,45 +72,93 @@ async function startAudio(sampleRate) {
 }
 
 // Battery saves have nowhere to go in a browser tab, so they are mirrored into
-// local storage under the cartridge title and restored on the next load.
-function persistSave() {
-  if (!emu || !saveKey || !emu.save_dirty()) return;
+// IndexedDB and restored the next time the same cartridge is loaded. IndexedDB
+// rather than local storage because a flash save is 128KB of binary, which only
+// fits in local storage after a base64 expansion that eats most of its quota.
+const DB_NAME = "gba";
+const STORE = "saves";
+let dbPromise = null;
+
+function openDb() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+async function dbGet(key) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbPut(key, value) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// FNV-1a over the ROM, so two dumps that share a header title (a game and its
+// romhack, say) still get separate saves.
+function romKey(bytes, title) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i += 64) {
+    h ^= bytes[i];
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  h ^= bytes.length;
+  h = Math.imul(h, 0x01000193) >>> 0;
+  return `${title}:${h.toString(16)}`;
+}
+
+let writing = false;
+
+async function persistSave() {
+  if (!emu || !saveKey || writing || !emu.save_dirty()) return;
   const bytes = emu.save_data();
   if (bytes.length === 0) return;
+  writing = true;
   try {
-    let s = "";
-    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-    localStorage.setItem(saveKey, btoa(s));
+    await dbPut(saveKey, bytes);
   } catch {
-    // Quota errors are not worth interrupting play for.
+    // A failed write is not worth interrupting play for; the next tick retries.
+  } finally {
+    writing = false;
   }
 }
 
-function restoreSave() {
-  if (!saveKey) return;
-  const stored = localStorage.getItem(saveKey);
-  if (!stored) return;
+async function loadRom(bytes, name) {
+  await persistSave();
+  let next;
   try {
-    const raw = atob(stored);
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-    emu.load_save(bytes);
-  } catch {
-    // A corrupt entry just means the game starts fresh.
-  }
-}
-
-function loadRom(bytes, name) {
-  persistSave();
-  try {
-    emu = new Emulator(bytes);
+    next = new Emulator(bytes);
   } catch (err) {
     status(`could not load ${name}: ${err}`);
     return;
   }
-  romName = emu.title().trim() || name;
-  saveKey = `gba-save:${romName}`;
-  restoreSave();
+  // Restore before the loop can see the new machine, so the game never boots
+  // against empty save memory and then has it swapped underneath it.
+  emu = null;
+  romName = next.title().trim() || name;
+  saveKey = romKey(bytes, romName);
+  try {
+    const stored = await dbGet(saveKey);
+    if (stored && stored.length > 0) next.load_save(new Uint8Array(stored));
+  } catch {
+    // A missing or corrupt entry just means the game starts fresh.
+  }
+  emu = next;
   if (sink) sink.port.postMessage("flush");
   status(running ? `running ${romName}` : `${romName} ready, press start`);
 }
@@ -162,8 +210,10 @@ function frame(now) {
     emu.clear_audio();
   }
 
-  if (++sinceSave >= 180) {
-    sinceSave = 0;
+  // Flush the battery save at most once a second, and only when the cartridge
+  // actually touched it.
+  if (now - sinceSave >= 1000) {
+    sinceSave = now;
     persistSave();
   }
 }
@@ -173,7 +223,7 @@ async function fetchTestRom() {
   try {
     const res = await fetch(TEST_ROM);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    loadRom(new Uint8Array(await res.arrayBuffer()), "arm.gba");
+    await loadRom(new Uint8Array(await res.arrayBuffer()), "arm.gba");
   } catch (err) {
     status(`could not fetch the test ROM: ${err}`);
   }
@@ -198,10 +248,15 @@ async function main() {
   romInput.addEventListener("change", async () => {
     const file = romInput.files[0];
     if (!file) return;
-    loadRom(new Uint8Array(await file.arrayBuffer()), file.name);
+    await loadRom(new Uint8Array(await file.arrayBuffer()), file.name);
   });
 
-  window.addEventListener("beforeunload", persistSave);
+  // A tab can be closed or hidden without ever running another frame, so flush
+  // on the way out as well as on the once-a-second timer.
+  window.addEventListener("pagehide", persistSave);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") persistSave();
+  });
   // Exposed so the pacing can be checked from the console: read it, wait a
   // known number of seconds, read it again, and the difference should be about
   // 59.7 emulated frames per second regardless of the display's refresh rate.
