@@ -1,3 +1,15 @@
+// Hardware emulation reads more naturally as nested register decodes and as
+// index-parallel scanline loops than as the forms clippy prefers, so those
+// lints are turned off deliberately rather than worked around.
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_match)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::new_without_default)]
+// The `gba_*` functions below are the C FFI surface consumed by the iOS
+// frontend. They are `extern "C"` and not `unsafe fn` on purpose: the pointer
+// contract is documented and enforced on the Swift side.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 pub mod bus;
 pub mod cpu;
 pub mod ppu;
@@ -8,8 +20,8 @@ mod save_tests;
 
 use std::ffi::c_void;
 
-/// C FFI for embedding the emulator core (iOS app frontend).
-/// All functions take the opaque handle returned by `gba_create`.
+// C FFI for embedding the emulator core (iOS app frontend).
+// All functions take the opaque handle returned by `gba_create`.
 
 #[unsafe(no_mangle)]
 pub extern "C" fn gba_create(

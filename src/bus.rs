@@ -294,10 +294,18 @@ impl Bus {
                 let vb = if cnt_h & 0x08 != 0 { 1.0 } else { 0.5 };
                 let a = self.sample_a as f32 / 128.0 * va * 0.35;
                 let b = self.sample_b as f32 / 128.0 * vb * 0.35;
-                if cnt_h & 0x0200 != 0 { l += a }
-                if cnt_h & 0x0100 != 0 { r += a }
-                if cnt_h & 0x2000 != 0 { l += b }
-                if cnt_h & 0x1000 != 0 { r += b }
+                if cnt_h & 0x0200 != 0 {
+                    l += a
+                }
+                if cnt_h & 0x0100 != 0 {
+                    r += a
+                }
+                if cnt_h & 0x2000 != 0 {
+                    l += b
+                }
+                if cnt_h & 0x1000 != 0 {
+                    r += b
+                }
                 let (pl, pr) = self.psg.output();
                 let pv = match cnt_h & 3 {
                     0 => 0.25,
@@ -514,7 +522,11 @@ impl Bus {
             for _ in 0..4 {
                 let v = self.read32(src);
                 for b in v.to_le_bytes() {
-                    let f = if fifo_addr == 0x0400_00A0 { &mut self.fifo_a } else { &mut self.fifo_b };
+                    let f = if fifo_addr == 0x0400_00A0 {
+                        &mut self.fifo_a
+                    } else {
+                        &mut self.fifo_b
+                    };
                     if f.len() < 32 {
                         f.push_back(b as i8);
                     }
@@ -576,7 +588,11 @@ impl Bus {
             a & 0xFFFF
         };
         // Never index past the buffer, whatever the game does.
-        if off < self.save.len() { off } else { off % self.save.len().max(1) }
+        if off < self.save.len() {
+            off
+        } else {
+            off % self.save.len().max(1)
+        }
     }
 
     fn flash_read(&self, addr: u32) -> u8 {
@@ -751,7 +767,11 @@ impl Bus {
         if b == 63 {
             self.ee_reading = false;
         }
-        let byte = self.save.get(self.ee_read_off + b / 8).copied().unwrap_or(0xFF);
+        let byte = self
+            .save
+            .get(self.ee_read_off + b / 8)
+            .copied()
+            .unwrap_or(0xFF);
         byte >> (7 - b % 8) & 1
     }
 
@@ -768,16 +788,22 @@ impl Bus {
             0x07 => self.oam[addr as usize & 0x3FF],
             0x0D if self.eeprom_selected(addr) => {
                 // One data bit per halfword, in bit 0 of the low byte.
-                if addr & 1 == 0 { self.eeprom_read_bit() } else { 0 }
+                if addr & 1 == 0 {
+                    self.eeprom_read_bit()
+                } else {
+                    0
+                }
             }
             0x08..=0x0D => {
                 let idx = (addr & 0x01FF_FFFF) as usize;
                 *self.rom.get(idx).unwrap_or(&0xFF)
             }
             0x0E | 0x0F => match self.save_type {
-                SaveType::Sram => {
-                    self.save.get(addr as usize & 0x7FFF).copied().unwrap_or(0xFF)
-                }
+                SaveType::Sram => self
+                    .save
+                    .get(addr as usize & 0x7FFF)
+                    .copied()
+                    .unwrap_or(0xFF),
                 t if t.is_flash() => self.flash_read(addr),
                 _ => 0xFF, // EEPROM carts leave this region unmapped
             },
@@ -787,7 +813,10 @@ impl Bus {
 
     fn raw8(&mut self, addr: u32, val: u8) {
         if self.pal_trace && (0x02037418..0x02037438).contains(&addr) {
-            eprintln!("palbuf write {:08X} = {:02X} from pc={:08X}", addr, val, self.last_pc);
+            eprintln!(
+                "palbuf write {:08X} = {:02X} from pc={:08X}",
+                addr, val, self.last_pc
+            );
         }
         match addr >> 24 {
             0x02 => self.ewram[addr as usize & 0x3FFFF] = val,
@@ -928,8 +957,15 @@ impl Bus {
     }
 
     fn io_write(&mut self, off: u32, val: u8) {
-        if std::env::var("GBA_IOLOG").is_ok() && matches!(off, 0x004 | 0x005 | 0x128 | 0x134 | 0x200 | 0x201 | 0x208) {
-            eprintln!("io write {:03X} = {:02X} (frame ~{})", off, val, self.cycles / 280896);
+        if std::env::var("GBA_IOLOG").is_ok()
+            && matches!(off, 0x004 | 0x005 | 0x128 | 0x134 | 0x200 | 0x201 | 0x208)
+        {
+            eprintln!(
+                "io write {:03X} = {:02X} (frame ~{})",
+                off,
+                val,
+                self.cycles / 280896
+            );
         }
         match off {
             0x006 | 0x007 => {} // VCOUNT read-only

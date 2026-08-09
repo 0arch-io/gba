@@ -44,7 +44,11 @@ impl Square {
         self.env_timer = self.env_period;
         if has_sweep {
             self.sweep_shadow = self.freq;
-            self.sweep_timer = if self.sweep_period == 0 { 8 } else { self.sweep_period };
+            self.sweep_timer = if self.sweep_period == 0 {
+                8
+            } else {
+                self.sweep_period
+            };
             self.sweep_enabled = self.sweep_period != 0 || self.sweep_shift != 0;
             if self.sweep_shift != 0 && self.sweep_next() > 2047 {
                 self.enabled = false;
@@ -66,7 +70,11 @@ impl Square {
             self.sweep_timer -= 1;
         }
         if self.sweep_timer == 0 {
-            self.sweep_timer = if self.sweep_period == 0 { 8 } else { self.sweep_period };
+            self.sweep_timer = if self.sweep_period == 0 {
+                8
+            } else {
+                self.sweep_period
+            };
             if self.sweep_enabled && self.sweep_period != 0 {
                 let next = self.sweep_next();
                 if next > 2047 {
@@ -163,7 +171,11 @@ struct Noise {
 
 impl Noise {
     fn period(&self) -> i32 {
-        let d = if self.divisor_code == 0 { 8 } else { self.divisor_code as i32 * 16 };
+        let d = if self.divisor_code == 0 {
+            8
+        } else {
+            self.divisor_code as i32 * 16
+        };
         (d << self.shift) * 4 // GBA clock = 4x GB
     }
 
@@ -212,7 +224,10 @@ impl Psg {
             ch1: Square::default(),
             ch2: Square::default(),
             ch3: Wave::default(),
-            ch4: Noise { lfsr: 0x7FFF, ..Default::default() },
+            ch4: Noise {
+                lfsr: 0x7FFF,
+                ..Default::default()
+            },
             wave_ram: [[0; 16]; 2],
             frame_timer: 0,
             frame_step: 0,
@@ -236,7 +251,11 @@ impl Psg {
                     self.ch3.bank ^= 1;
                 }
                 let byte = self.wave_ram[self.ch3.bank as usize][(self.ch3.pos / 2) as usize];
-                self.ch3.sample = if self.ch3.pos & 1 == 0 { byte >> 4 } else { byte & 0x0F };
+                self.ch3.sample = if self.ch3.pos & 1 == 0 {
+                    byte >> 4
+                } else {
+                    byte & 0x0F
+                };
             }
         }
 
@@ -304,11 +323,20 @@ impl Psg {
         } else {
             0
         };
-        let outs = [self.ch1.output(), self.ch2.output(), wave_out, self.ch4.output()];
+        let outs = [
+            self.ch1.output(),
+            self.ch2.output(),
+            wave_out,
+            self.ch4.output(),
+        ];
         let mut l = 0.0f32;
         let mut r = 0.0f32;
         for (i, &o) in outs.iter().enumerate() {
-            let v = if o == 0 { 0.0 } else { (o as f32 / 15.0 * 2.0 - 1.0) * 0.25 };
+            let v = if o == 0 {
+                0.0
+            } else {
+                (o as f32 / 15.0 * 2.0 - 1.0) * 0.25
+            };
             if self.cnt_l & (1 << (12 + i)) != 0 {
                 l += v;
             }

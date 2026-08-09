@@ -107,7 +107,10 @@ impl Cpu {
     fn switch_mode(&mut self, old: u32) {
         let new = self.mode();
         if std::env::var("GBA_MODELOG").is_ok() {
-            eprintln!("mode {:#04X} -> {:#04X} at pc={:#010X} sp={:#010X}", old, new, self.regs[15], self.regs[13]);
+            eprintln!(
+                "mode {:#04X} -> {:#04X} at pc={:#010X} sp={:#010X}",
+                old, new, self.regs[15], self.regs[13]
+            );
         }
         if old == new || (old | new) & !0xF == 0x10 && (old & 0xF) == (new & 0xF) {
             return;
@@ -223,7 +226,10 @@ impl Cpu {
                 if amount == 0 {
                     (val, c_in)
                 } else if amount < 32 {
-                    (((val as i32) >> amount) as u32, val >> (amount - 1) & 1 != 0)
+                    (
+                        ((val as i32) >> amount) as u32,
+                        val >> (amount - 1) & 1 != 0,
+                    )
                 } else {
                     let fill = if val >> 31 != 0 { u32::MAX } else { 0 };
                     (fill, val >> 31 != 0)
@@ -285,8 +291,10 @@ impl Cpu {
                 let thumb = self.thumb();
                 let old_cpsr = self.cpsr;
                 let old_mode = self.mode();
-                // LR_irq = next instruction + 4
-                let ret = self.regs[15].wrapping_add(if thumb { 4 } else { 4 });
+                // LR_irq = next instruction + 4. The offset is 4 in both ARM
+                // and Thumb state because PC is already two instructions ahead.
+                let _ = thumb;
+                let ret = self.regs[15].wrapping_add(4);
                 self.cpsr = (self.cpsr & !0x3F) | 0x12 | 0x80; // IRQ mode, ARM, I set
                 self.switch_mode(old_mode);
                 *self.spsr_for_mode() = old_cpsr;
@@ -400,7 +408,11 @@ impl Cpu {
         }
         if op & 0x0FBF_0FFF == 0x010F_0000 {
             // MRS
-            let v = if op & 0x0040_0000 != 0 { *self.spsr_for_mode() } else { self.cpsr };
+            let v = if op & 0x0040_0000 != 0 {
+                *self.spsr_for_mode()
+            } else {
+                self.cpsr
+            };
             self.set_r(op >> 12 & 0xF, v);
             return;
         }
@@ -455,6 +467,9 @@ impl Cpu {
         }
     }
 
+    // Kept for the SWI/undefined-instruction paths, which are currently
+    // handled by the BIOS HLE layer instead of a real exception vector.
+    #[allow(dead_code)]
     fn exception(&mut self, vector: u32, mode: u32) {
         let old_cpsr = self.cpsr;
         let old_mode = self.mode();
@@ -483,7 +498,11 @@ impl Cpu {
             if op & 0x10 != 0 {
                 // Register shift amount: r15 reads +12 here (pipeline quirk).
                 let amount = self.r(op >> 8 & 0xF) & 0xFF;
-                let val = if rm == 15 { self.r(15).wrapping_add(4) } else { self.r(rm) };
+                let val = if rm == 15 {
+                    self.r(15).wrapping_add(4)
+                } else {
+                    self.r(rm)
+                };
                 self.shift(ty, val, amount, false)
             } else {
                 let amount = op >> 7 & 0x1F;
@@ -516,22 +535,72 @@ impl Cpu {
         };
         let c = self.flag(C) as u32;
         let result = match opcode {
-            0x0 => { let r = a & op2; if set { logical_flags(self, r) } Some(r) } // AND
-            0x1 => { let r = a ^ op2; if set { logical_flags(self, r) } Some(r) } // EOR
-            0x2 => Some(self.sub_with_flags(a, op2, 1, set)),                     // SUB
-            0x3 => Some(self.sub_with_flags(op2, a, 1, set)),                     // RSB
-            0x4 => Some(self.add_with_flags(a, op2, 0, set)),                     // ADD
-            0x5 => Some(self.add_with_flags(a, op2, c, set)),                     // ADC
-            0x6 => Some(self.sub_with_flags(a, op2, c, set)),                     // SBC
-            0x7 => Some(self.sub_with_flags(op2, a, c, set)),                     // RSC
-            0x8 => { let r = a & op2; logical_flags(self, r); None }              // TST
-            0x9 => { let r = a ^ op2; logical_flags(self, r); None }              // TEQ
-            0xA => { self.sub_with_flags(a, op2, 1, true); None }                 // CMP
-            0xB => { self.add_with_flags(a, op2, 0, true); None }                 // CMN
-            0xC => { let r = a | op2; if set { logical_flags(self, r) } Some(r) } // ORR
-            0xD => { let r = op2; if set { logical_flags(self, r) } Some(r) }     // MOV
-            0xE => { let r = a & !op2; if set { logical_flags(self, r) } Some(r) }// BIC
-            _ => { let r = !op2; if set { logical_flags(self, r) } Some(r) }      // MVN
+            0x0 => {
+                let r = a & op2;
+                if set {
+                    logical_flags(self, r)
+                }
+                Some(r)
+            } // AND
+            0x1 => {
+                let r = a ^ op2;
+                if set {
+                    logical_flags(self, r)
+                }
+                Some(r)
+            } // EOR
+            0x2 => Some(self.sub_with_flags(a, op2, 1, set)), // SUB
+            0x3 => Some(self.sub_with_flags(op2, a, 1, set)), // RSB
+            0x4 => Some(self.add_with_flags(a, op2, 0, set)), // ADD
+            0x5 => Some(self.add_with_flags(a, op2, c, set)), // ADC
+            0x6 => Some(self.sub_with_flags(a, op2, c, set)), // SBC
+            0x7 => Some(self.sub_with_flags(op2, a, c, set)), // RSC
+            0x8 => {
+                let r = a & op2;
+                logical_flags(self, r);
+                None
+            } // TST
+            0x9 => {
+                let r = a ^ op2;
+                logical_flags(self, r);
+                None
+            } // TEQ
+            0xA => {
+                self.sub_with_flags(a, op2, 1, true);
+                None
+            } // CMP
+            0xB => {
+                self.add_with_flags(a, op2, 0, true);
+                None
+            } // CMN
+            0xC => {
+                let r = a | op2;
+                if set {
+                    logical_flags(self, r)
+                }
+                Some(r)
+            } // ORR
+            0xD => {
+                let r = op2;
+                if set {
+                    logical_flags(self, r)
+                }
+                Some(r)
+            } // MOV
+            0xE => {
+                let r = a & !op2;
+                if set {
+                    logical_flags(self, r)
+                }
+                Some(r)
+            } // BIC
+            _ => {
+                let r = !op2;
+                if set {
+                    logical_flags(self, r)
+                }
+                Some(r)
+            } // MVN
         };
         if let Some(r) = result {
             if rd == 15 {
@@ -563,7 +632,11 @@ impl Cpu {
         let byte = op & 0x0040_0000 != 0;
         let load = op & 0x0010_0000 != 0;
         let wb = op & 0x0020_0000 != 0;
-        let off_base = if up { base.wrapping_add(offset) } else { base.wrapping_sub(offset) };
+        let off_base = if up {
+            base.wrapping_add(offset)
+        } else {
+            base.wrapping_sub(offset)
+        };
         let addr = if pre { off_base } else { base };
         if load {
             let v = if byte {
@@ -576,7 +649,11 @@ impl Cpu {
             }
             self.set_r(rd, v); // load wins over writeback on same register
         } else {
-            let v = if rd == 15 { self.r(15).wrapping_add(4) } else { self.r(rd) };
+            let v = if rd == 15 {
+                self.r(15).wrapping_add(4)
+            } else {
+                self.r(rd)
+            };
             if byte {
                 self.bus.write8(addr, v as u8);
             } else {
@@ -601,7 +678,11 @@ impl Cpu {
         let pre = op & 0x0100_0000 != 0;
         let load = op & 0x0010_0000 != 0;
         let wb = op & 0x0020_0000 != 0;
-        let off_base = if up { base.wrapping_add(offset) } else { base.wrapping_sub(offset) };
+        let off_base = if up {
+            base.wrapping_add(offset)
+        } else {
+            base.wrapping_sub(offset)
+        };
         let addr = if pre { off_base } else { base };
         let ty = op >> 5 & 3;
         if load {
@@ -671,7 +752,11 @@ impl Cpu {
             let s = base.wrapping_sub(n * 4);
             if pre { s } else { s.wrapping_add(4) }
         };
-        let new_base = if up { base.wrapping_add(n * 4) } else { base.wrapping_sub(n * 4) };
+        let new_base = if up {
+            base.wrapping_add(n * 4)
+        } else {
+            base.wrapping_sub(n * 4)
+        };
 
         // S bit without r15 in a load: transfer the user-mode register bank.
         let user_bank = s_bit && !(load && list & 0x8000 != 0);
@@ -728,7 +813,10 @@ impl Cpu {
     /// High-level emulation of BIOS calls (no BIOS image needed).
     fn hle_swi(&mut self, n: u32) {
         if std::env::var("GBA_SWILOG").is_ok() {
-            eprintln!("swi {:#04X} r0={:#010X} r1={:#010X} r2={:#010X}", n, self.regs[0], self.regs[1], self.regs[2]);
+            eprintln!(
+                "swi {:#04X} r0={:#010X} r1={:#010X} r2={:#010X}",
+                n, self.regs[0], self.regs[1], self.regs[2]
+            );
         }
         if n == 0x0B
             && std::env::var("GBA_BADPTR").is_ok()
@@ -741,11 +829,12 @@ impl Cpu {
             );
         }
         match n {
-            0x00 => { // SoftReset: jump to ROM entry
+            0x00 => {
+                // SoftReset: jump to ROM entry
                 self.regs[15] = 0x0800_0000;
                 self.set_flag(T, false);
             }
-            0x01 => {} // RegisterRamReset: ignore
+            0x01 => {}                         // RegisterRamReset: ignore
             0x02 | 0x03 => self.halted = true, // Halt/Stop
             0x04 => {
                 // IntrWait(discard_old, mask)
@@ -764,7 +853,8 @@ impl Cpu {
                 self.intr_wait = Some(1);
                 self.bus.ime = true;
             }
-            0x06 => { // Div: r0/r1 -> r0=quot, r1=rem, r3=|quot|
+            0x06 => {
+                // Div: r0/r1 -> r0=quot, r1=rem, r3=|quot|
                 let num = self.regs[0] as i32;
                 let den = self.regs[1] as i32;
                 if den != 0 {
@@ -774,7 +864,8 @@ impl Cpu {
                     self.regs[3] = q.unsigned_abs();
                 }
             }
-            0x07 => { // DivArm: r1/r0
+            0x07 => {
+                // DivArm: r1/r0
                 let num = self.regs[1] as i32;
                 let den = self.regs[0] as i32;
                 if den != 0 {
@@ -785,17 +876,20 @@ impl Cpu {
                 }
             }
             0x08 => self.regs[0] = (self.regs[0] as f64).sqrt() as u32, // Sqrt
-            0x09 => { // ArcTan (approximation adequate for games)
+            0x09 => {
+                // ArcTan (approximation adequate for games)
                 let x = self.regs[0] as i16 as f64 / 16384.0;
                 self.regs[0] = ((x.atan() / std::f64::consts::PI * 0x8000 as f64) as i32) as u32;
             }
-            0x0A => { // ArcTan2
+            0x0A => {
+                // ArcTan2
                 let x = self.regs[0] as i16 as f64;
                 let y = self.regs[1] as i16 as f64;
                 let a = y.atan2(x) / (2.0 * std::f64::consts::PI) * 65536.0;
                 self.regs[0] = (a as i32 as u32) & 0xFFFF;
             }
-            0x0B => { // CpuSet
+            0x0B => {
+                // CpuSet
                 let src = self.regs[0];
                 let dst = self.regs[1];
                 let cnt = self.regs[2];
@@ -805,18 +899,27 @@ impl Cpu {
                     // 32-bit
                     let v0 = self.bus.read32(src);
                     for i in 0..count {
-                        let v = if fill { v0 } else { self.bus.read32(src + i * 4) };
+                        let v = if fill {
+                            v0
+                        } else {
+                            self.bus.read32(src + i * 4)
+                        };
                         self.bus.write32(dst + i * 4, v);
                     }
                 } else {
                     let v0 = self.bus.read16(src);
                     for i in 0..count {
-                        let v = if fill { v0 } else { self.bus.read16(src + i * 2) };
+                        let v = if fill {
+                            v0
+                        } else {
+                            self.bus.read16(src + i * 2)
+                        };
                         self.bus.write16(dst + i * 2, v);
                     }
                 }
             }
-            0x0C => { // CpuFastSet: 32-bit only, chunks of 8 words
+            0x0C => {
+                // CpuFastSet: 32-bit only, chunks of 8 words
                 let src = self.regs[0];
                 let dst = self.regs[1];
                 let cnt = self.regs[2];
@@ -824,7 +927,11 @@ impl Cpu {
                 let fill = cnt & 0x0100_0000 != 0;
                 let v0 = self.bus.read32(src);
                 for i in 0..count {
-                    let v = if fill { v0 } else { self.bus.read32(src + i * 4) };
+                    let v = if fill {
+                        v0
+                    } else {
+                        self.bus.read32(src + i * 4)
+                    };
                     self.bus.write32(dst + i * 4, v);
                 }
             }
@@ -991,14 +1098,22 @@ impl Cpu {
                     // Children sit at (node & ~1) + offset*2 + 2, right one
                     // first; the parent says whether each child is a leaf.
                     let child = (node_addr & !1) + (node as u32 & 0x3F) * 2 + 2 + bit;
-                    let leaf = if bit == 1 { node & 0x40 != 0 } else { node & 0x80 != 0 };
+                    let leaf = if bit == 1 {
+                        node & 0x40 != 0
+                    } else {
+                        node & 0x80 != 0
+                    };
                     node_addr = child;
                     node = self.bus.read8(node_addr);
 
                     if leaf {
                         // Symbols fill the output word from the top down, so
                         // the first symbol decoded lands in the low bits.
-                        let symbol = if symbol_bits == 4 { node as u32 & 0xF } else { node as u32 };
+                        let symbol = if symbol_bits == 4 {
+                            node as u32 & 0xF
+                        } else {
+                            node as u32
+                        };
                         out = (out >> symbol_bits) | (symbol << (32 - symbol_bits));
                         out_bits += symbol_bits;
                         if out_bits == 32 {
@@ -1047,7 +1162,10 @@ impl Cpu {
                 // caller's destination buffer untouched, which shows up as
                 // garbage on screen rather than as an error, so log it.
                 if std::env::var("GBA_SWILOG").is_ok() {
-                    eprintln!("unimplemented SWI {n:#04X} r0={:08X} r1={:08X}", self.regs[0], self.regs[1]);
+                    eprintln!(
+                        "unimplemented SWI {n:#04X} r0={:08X} r1={:08X}",
+                        self.regs[0], self.regs[1]
+                    );
                 }
             }
         }
@@ -1063,7 +1181,11 @@ impl Cpu {
                     // ADD/SUB register or 3-bit immediate
                     let rd = op & 7;
                     let rs = op >> 3 & 7;
-                    let v = if op & 0x400 != 0 { op >> 6 & 7 } else { self.r(op >> 6 & 7) };
+                    let v = if op & 0x400 != 0 {
+                        op >> 6 & 7
+                    } else {
+                        self.r(op >> 6 & 7)
+                    };
                     let a = self.r(rs);
                     let r = if op & 0x200 != 0 {
                         self.sub_with_flags(a, v, 1, true)
@@ -1155,13 +1277,24 @@ impl Cpu {
                     // ADD rd, pc/sp, imm
                     let rd = op >> 8 & 7;
                     let imm = (op & 0xFF) << 2;
-                    let base = if op & 0x0800 != 0 { self.r(13) } else { self.r(15) & !3 };
+                    let base = if op & 0x0800 != 0 {
+                        self.r(13)
+                    } else {
+                        self.r(15) & !3
+                    };
                     self.set_r(rd, base.wrapping_add(imm));
                 } else if op & 0x0F00 == 0 {
                     // ADD SP, +/-imm
                     let imm = (op & 0x7F) << 2;
                     let sp = self.r(13);
-                    self.set_r(13, if op & 0x80 != 0 { sp.wrapping_sub(imm) } else { sp.wrapping_add(imm) });
+                    self.set_r(
+                        13,
+                        if op & 0x80 != 0 {
+                            sp.wrapping_sub(imm)
+                        } else {
+                            sp.wrapping_add(imm)
+                        },
+                    );
                 } else if op & 0x0600 == 0x0400 {
                     // PUSH/POP
                     let load = op & 0x0800 != 0;
@@ -1198,7 +1331,10 @@ impl Cpu {
                     }
                 } else {
                     if std::env::var("GBA_STRICT").is_ok() {
-                        panic!("unimplemented Thumb op {op:#06X} at {:#010X}", self.regs[15]);
+                        panic!(
+                            "unimplemented Thumb op {op:#06X} at {:#010X}",
+                            self.regs[15]
+                        );
                     }
                 }
             }
@@ -1266,7 +1402,10 @@ impl Cpu {
                     self.regs[15] = lr & !1;
                 } else {
                     if std::env::var("GBA_STRICT").is_ok() {
-                        panic!("unimplemented Thumb op {op:#06X} at {:#010X}", self.regs[15]);
+                        panic!(
+                            "unimplemented Thumb op {op:#06X} at {:#010X}",
+                            self.regs[15]
+                        );
                     }
                 }
             }
@@ -1282,34 +1421,82 @@ impl Cpu {
             let b = self.r(rs);
             let c = self.flag(C) as u32;
             match op >> 6 & 0xF {
-                0x0 => { let r = a & b; self.set_r(rd, r); self.set_nz(r); }
-                0x1 => { let r = a ^ b; self.set_r(rd, r); self.set_nz(r); }
+                0x0 => {
+                    let r = a & b;
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                }
+                0x1 => {
+                    let r = a ^ b;
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                }
                 0x2 => {
                     let (r, cy) = self.shift(0, a, b & 0xFF, false);
-                    self.set_r(rd, r); self.set_nz(r); self.set_flag(C, cy);
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                    self.set_flag(C, cy);
                 }
                 0x3 => {
                     let (r, cy) = self.shift(1, a, b & 0xFF, false);
-                    self.set_r(rd, r); self.set_nz(r); self.set_flag(C, cy);
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                    self.set_flag(C, cy);
                 }
                 0x4 => {
                     let (r, cy) = self.shift(2, a, b & 0xFF, false);
-                    self.set_r(rd, r); self.set_nz(r); self.set_flag(C, cy);
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                    self.set_flag(C, cy);
                 }
-                0x5 => { let r = self.add_with_flags(a, b, c, true); self.set_r(rd, r); }
-                0x6 => { let r = self.sub_with_flags(a, b, c, true); self.set_r(rd, r); }
+                0x5 => {
+                    let r = self.add_with_flags(a, b, c, true);
+                    self.set_r(rd, r);
+                }
+                0x6 => {
+                    let r = self.sub_with_flags(a, b, c, true);
+                    self.set_r(rd, r);
+                }
                 0x7 => {
                     let (r, cy) = self.shift(3, a, b & 0xFF, false);
-                    self.set_r(rd, r); self.set_nz(r); self.set_flag(C, cy);
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                    self.set_flag(C, cy);
                 }
-                0x8 => { let r = a & b; self.set_nz(r); }
-                0x9 => { let r = self.sub_with_flags(0, b, 1, true); self.set_r(rd, r); }
-                0xA => { self.sub_with_flags(a, b, 1, true); }
-                0xB => { self.add_with_flags(a, b, 0, true); }
-                0xC => { let r = a | b; self.set_r(rd, r); self.set_nz(r); }
-                0xD => { let r = a.wrapping_mul(b); self.set_r(rd, r); self.set_nz(r); }
-                0xE => { let r = a & !b; self.set_r(rd, r); self.set_nz(r); }
-                _ => { let r = !b; self.set_r(rd, r); self.set_nz(r); }
+                0x8 => {
+                    let r = a & b;
+                    self.set_nz(r);
+                }
+                0x9 => {
+                    let r = self.sub_with_flags(0, b, 1, true);
+                    self.set_r(rd, r);
+                }
+                0xA => {
+                    self.sub_with_flags(a, b, 1, true);
+                }
+                0xB => {
+                    self.add_with_flags(a, b, 0, true);
+                }
+                0xC => {
+                    let r = a | b;
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                }
+                0xD => {
+                    let r = a.wrapping_mul(b);
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                }
+                0xE => {
+                    let r = a & !b;
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                }
+                _ => {
+                    let r = !b;
+                    self.set_r(rd, r);
+                    self.set_nz(r);
+                }
             }
         } else if op & 0x1C00 == 0x0400 {
             // Hi register ops / BX
@@ -1361,7 +1548,10 @@ impl Cpu {
                 // sign-extended group
                 match op >> 10 & 3 {
                     0 => self.bus.write16(addr, self.r(rd) as u16), // STRH
-                    1 => { let v = self.bus.read8(addr) as i8 as i32 as u32; self.set_r(rd, v); }
+                    1 => {
+                        let v = self.bus.read8(addr) as i8 as i32 as u32;
+                        self.set_r(rd, v);
+                    }
                     2 => {
                         let v = (self.bus.read16(addr) as u32).rotate_right((addr & 1) * 8);
                         self.set_r(rd, v);
@@ -1383,7 +1573,10 @@ impl Cpu {
                         let v = self.bus.read32(addr).rotate_right((addr & 3) * 8);
                         self.set_r(rd, v);
                     }
-                    _ => { let v = self.bus.read8(addr) as u32; self.set_r(rd, v); }
+                    _ => {
+                        let v = self.bus.read8(addr) as u32;
+                        self.set_r(rd, v);
+                    }
                 }
             }
         }

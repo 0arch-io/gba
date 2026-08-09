@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ALSA and X11 headers (cpal and minifb build dependencies)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libwayland-cursor0 libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch test ROMs
+        run: git clone --depth 1 https://github.com/jsmolka/gba-tests tests/gba-tests
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test

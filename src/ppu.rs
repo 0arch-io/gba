@@ -52,7 +52,9 @@ pub struct Ppu {
 
 impl Ppu {
     pub fn new() -> Self {
-        Self { framebuffer: [0; WIDTH * HEIGHT] }
+        Self {
+            framebuffer: [0; WIDTH * HEIGHT],
+        }
     }
 
     fn pal16(palette: &[u8], bank: u32, idx: u32, obj: bool) -> u16 {
@@ -63,7 +65,10 @@ impl Ppu {
 
     fn pal256(palette: &[u8], idx: u32, obj: bool) -> u16 {
         let base = if obj { 0x200 } else { 0 };
-        u16::from_le_bytes([palette[base + idx as usize * 2], palette[base + idx as usize * 2 + 1]])
+        u16::from_le_bytes([
+            palette[base + idx as usize * 2],
+            palette[base + idx as usize * 2 + 1],
+        ])
     }
 
     /// Render one scanline from the current register/VRAM state.
@@ -152,7 +157,11 @@ impl Ppu {
         let (w0x1, w0x2, w0y1, w0y2) = win_range(r16(0x40), r16(0x44));
         let (w1x1, w1x2, w1y1, w1y2) = win_range(r16(0x42), r16(0x46));
         let in_vrange = |y1: u32, y2: u32| {
-            if y1 <= y2 { y >= y1 && y < y2 } else { y >= y1 || y < y2 }
+            if y1 <= y2 {
+                y >= y1 && y < y2
+            } else {
+                y >= y1 || y < y2
+            }
         };
         let w0v = win0_on && in_vrange(w0y1, w0y2);
         let w1v = win1_on && in_vrange(w1y1, w1y2);
@@ -175,7 +184,11 @@ impl Ppu {
             // Determine layer-enable mask and effect-enable for this pixel.
             let (mask, effects) = if any_window {
                 let in_h = |x1: u32, x2: u32| {
-                    if x1 <= x2 { xu >= x1 && xu < x2 } else { xu >= x1 || xu < x2 }
+                    if x1 <= x2 {
+                        xu >= x1 && xu < x2
+                    } else {
+                        xu >= x1 || xu < x2
+                    }
                 };
                 if w0v && in_h(w0x1, w0x2) {
                     (winin & 0x3F, winin & 0x20 != 0)
@@ -230,7 +243,17 @@ impl Ppu {
             if y == 106 && x == 100 && std::env::var("GBA_OBJDEBUG").is_ok() {
                 eprintln!(
                     "px100: obj(op={} prio={} semi={} col={:04X}) top=({:04X},{}) second=({:04X},{}) mask={:02X} effects={} bldcnt={:04X}",
-                    obj.opaque, obj.prio, obj.semi, obj.color, top.0, top.1, second.0, second.1, mask, effects, bldcnt
+                    obj.opaque,
+                    obj.prio,
+                    obj.semi,
+                    obj.color,
+                    top.0,
+                    top.1,
+                    second.0,
+                    second.1,
+                    mask,
+                    effects,
+                    bldcnt
                 );
             }
             // Apply color effects.
@@ -250,14 +273,7 @@ impl Ppu {
         }
     }
 
-    fn draw_text_bg(
-        y: u32,
-        bg: u32,
-        io: &[u8],
-        palette: &[u8],
-        vram: &[u8],
-        row: &mut [u16],
-    ) {
+    fn draw_text_bg(y: u32, bg: u32, io: &[u8], palette: &[u8], vram: &[u8], row: &mut [u16]) {
         let r16 = |off: usize| u16::from_le_bytes([io[off], io[off + 1]]) as u32;
         let bgcnt = r16(0x8 + bg as usize * 2);
         let char_base = (bgcnt >> 2 & 3) as usize * 0x4000;
@@ -413,8 +429,16 @@ impl Ppu {
             let (bw, bh) = if double { (w * 2, h * 2) } else { (w, h) };
             let sy = a0 & 0xFF;
             let sx = a1 & 0x1FF;
-            let oy = if sy + bh > 256 { sy as i32 - 256 } else { sy as i32 };
-            let ox = if sx + bw > 512 { sx as i32 - 512 } else { sx as i32 };
+            let oy = if sy + bh > 256 {
+                sy as i32 - 256
+            } else {
+                sy as i32
+            };
+            let ox = if sx + bw > 512 {
+                sx as i32 - 512
+            } else {
+                sx as i32
+            };
             let line = y as i32 - oy;
             if line < 0 || line >= bh as i32 {
                 continue;
@@ -427,7 +451,11 @@ impl Ppu {
             if bitmap_mode && tile < 512 {
                 continue;
             }
-            let row_tiles = if one_dim { w / 8 * if eight_bpp { 2 } else { 1 } } else { 32 };
+            let row_tiles = if one_dim {
+                w / 8 * if eight_bpp { 2 } else { 1 }
+            } else {
+                32
+            };
 
             let sample = |tx: u32, ty: u32| -> u32 {
                 // Tile data for sprites lives at 0x10000; entries are 32
@@ -462,8 +490,8 @@ impl Ppu {
                     if !(0..WIDTH as i32).contains(&x) {
                         continue;
                     }
-                    let tx = (pa * (dx - cx) + pb * (line - cy) >> 8) + w as i32 / 2;
-                    let ty = (pc * (dx - cx) + pd * (line - cy) >> 8) + h as i32 / 2;
+                    let tx = ((pa * (dx - cx) + pb * (line - cy)) >> 8) + w as i32 / 2;
+                    let ty = ((pc * (dx - cx) + pd * (line - cy)) >> 8) + h as i32 / 2;
                     if tx < 0 || ty < 0 || tx >= w as i32 || ty >= h as i32 {
                         continue;
                     }
@@ -480,7 +508,11 @@ impl Ppu {
             } else {
                 let hflip = a1 & 0x1000 != 0;
                 let vflip = a1 & 0x2000 != 0;
-                let ty = if vflip { h - 1 - line as u32 } else { line as u32 };
+                let ty = if vflip {
+                    h - 1 - line as u32
+                } else {
+                    line as u32
+                };
                 for dx in 0..w {
                     let x = ox + dx as i32;
                     if !(0..WIDTH as i32).contains(&x) {

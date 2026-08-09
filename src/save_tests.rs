@@ -30,8 +30,18 @@ fn detects_every_marker() {
     ];
     for &(marker, want, size) in cases {
         let b = bus_with(marker);
-        assert_eq!(b.save_type, want, "marker {:?}", std::str::from_utf8(marker));
-        assert_eq!(b.save.len(), size, "marker {:?}", std::str::from_utf8(marker));
+        assert_eq!(
+            b.save_type,
+            want,
+            "marker {:?}",
+            std::str::from_utf8(marker)
+        );
+        assert_eq!(
+            b.save.len(),
+            size,
+            "marker {:?}",
+            std::str::from_utf8(marker)
+        );
     }
 }
 

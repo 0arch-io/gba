@@ -1,19 +1,32 @@
 target/
-*.ppm
-*.png
 tests/
-trace.txt
-refprobe
-*.lua
-*.c
-paltrace.txt
+*.ppm
+*.sav
+*.state
 *.bin
 *.raw
+*.zip
+*.lua
+*.c
+trace.txt
+paltrace.txt
+refprobe
+refprobe2
+refstrip/
+filmstrip/
+
+# ROMs are never committed. No commercial or homebrew ROM ships with this repo.
 *.gba
 *.gb
 *.gbc
-*.sav
-*.zip
+
+# Screenshots in the README are tracked; scratch PNGs elsewhere are not.
+*.png
+!screenshots/*.png
+
 ios/GBA.xcodeproj/
 ios/DerivedData/
 ios/build/
+
+# The mGBA reference probe is a tracked tool, unlike scratch C files.
+!tools/refprobe.c

@@ -24,15 +24,15 @@ fn main() -> ExitCode {
     let rom = std::fs::read(&rom_path).expect("failed to read ROM");
     let save_path = format!("{rom_path}.sav");
     let mut b = bus::Bus::new(rom);
-    if let Ok(sav) = std::fs::read(&save_path) {
-        if !b.load_save(&sav) {
-            eprintln!(
-                "warning: {save_path} is {} bytes but this cartridge has {} ({}); loaded anyway",
-                sav.len(),
-                b.save.len(),
-                b.save_type.name()
-            );
-        }
+    if let Ok(sav) = std::fs::read(&save_path)
+        && !b.load_save(&sav)
+    {
+        eprintln!(
+            "warning: {save_path} is {} bytes but this cartridge has {} ({}); loaded anyway",
+            sav.len(),
+            b.save.len(),
+            b.save_type.name()
+        );
     }
     eprintln!("save type: {}", b.save_type.name());
     let mut cpu = cpu::Cpu::new(b);
@@ -53,7 +53,10 @@ fn main() -> ExitCode {
     if headless {
         // Run N frames, dump the last one as PPM. GBA_INPUT holds scripted
         // key presses: "first-last:key,..." (frame ranges, inclusive start).
-        let frames: u32 = env::var("GBA_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
+        let frames: u32 = env::var("GBA_FRAMES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
         let script: Vec<(u32, u32, u16)> = env::var("GBA_INPUT")
             .unwrap_or_default()
             .split(',')
@@ -80,10 +83,12 @@ fn main() -> ExitCode {
         let dump_every: Option<u32> = env::var("GBA_DUMP_EVERY").ok().and_then(|v| v.parse().ok());
         let dump_dir = env::var("GBA_DUMP_DIR").unwrap_or_else(|_| "filmstrip".into());
         let trace_boot = env::var("GBA_BOOTTRACE").is_ok();
-        let mut pc_hist: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+        let pc_hist: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
         let capture_audio = env::var("GBA_WAV").is_ok();
         let mut captured: Vec<f32> = Vec::new();
-        let brk: Option<u32> = env::var("GBA_BREAK").ok().and_then(|v| u32::from_str_radix(&v, 16).ok());
+        let brk: Option<u32> = env::var("GBA_BREAK")
+            .ok()
+            .and_then(|v| u32::from_str_radix(&v, 16).ok());
         let mut brk_hits = 0;
         let mut ring: VecDeque<u32> = VecDeque::new();
         while n < frames {
@@ -109,7 +114,7 @@ fn main() -> ExitCode {
             if cpu.bus.frame_ready {
                 cpu.bus.frame_ready = false;
                 if capture_audio {
-                    captured.extend(cpu.bus.audio.drain(..));
+                    captured.append(&mut cpu.bus.audio);
                     let cap = 44100 * 2 * 10;
                     if captured.len() > cap {
                         captured.drain(..captured.len() - cap);
@@ -120,14 +125,15 @@ fn main() -> ExitCode {
                 n += 1;
                 // GBA_DUMP_EVERY=K writes frameNNNNN.ppm into GBA_DUMP_DIR so
                 // one run gives a filmstrip to find where a picture goes wrong.
-                if let Some(k) = dump_every {
-                    if k > 0 && n % k == 0 {
-                        let _ = std::fs::create_dir_all(&dump_dir);
-                        dump_frame(
-                            &cpu.bus.ppu.framebuffer,
-                            &format!("{dump_dir}/frame{n:05}.ppm"),
-                        );
-                    }
+                if let Some(k) = dump_every
+                    && k > 0
+                    && n % k == 0
+                {
+                    let _ = std::fs::create_dir_all(&dump_dir);
+                    dump_frame(
+                        &cpu.bus.ppu.framebuffer,
+                        &format!("{dump_dir}/frame{n:05}.ppm"),
+                    );
                 }
                 let mut held = 0u16;
                 for &(a, b, bits) in &script {
@@ -152,16 +158,41 @@ fn main() -> ExitCode {
         }
         eprintln!("pc={:#010X}", cpu.regs[15]);
         let io = &cpu.bus.io;
-        let r16 = |o: usize| u16::from_le_bytes([io[o], io[o+1]]);
-        eprintln!("DISPCNT={:04X} BG0CNT={:04X} BG1CNT={:04X} BG2CNT={:04X} BG3CNT={:04X}",
-            r16(0), r16(8), r16(0xA), r16(0xC), r16(0xE));
-        eprintln!("BLDCNT={:04X} BLDY={:04X} IE={:04X} IME={}", r16(0x50), r16(0x54), cpu.bus.ie, cpu.bus.ime);
-        eprintln!("DISPSTAT={:02X} IF={:04X} halted={} SIOCNT={:04X} biosflags={:08X}",
-            io[4], cpu.bus.if_, cpu.halted, r16(0x128),
-            u32::from_le_bytes([cpu.bus.iwram[0x7FF8],cpu.bus.iwram[0x7FF9],cpu.bus.iwram[0x7FFA],cpu.bus.iwram[0x7FFB]]));
+        let r16 = |o: usize| u16::from_le_bytes([io[o], io[o + 1]]);
+        eprintln!(
+            "DISPCNT={:04X} BG0CNT={:04X} BG1CNT={:04X} BG2CNT={:04X} BG3CNT={:04X}",
+            r16(0),
+            r16(8),
+            r16(0xA),
+            r16(0xC),
+            r16(0xE)
+        );
+        eprintln!(
+            "BLDCNT={:04X} BLDY={:04X} IE={:04X} IME={}",
+            r16(0x50),
+            r16(0x54),
+            cpu.bus.ie,
+            cpu.bus.ime
+        );
+        eprintln!(
+            "DISPSTAT={:02X} IF={:04X} halted={} SIOCNT={:04X} biosflags={:08X}",
+            io[4],
+            cpu.bus.if_,
+            cpu.halted,
+            r16(0x128),
+            u32::from_le_bytes([
+                cpu.bus.iwram[0x7FF8],
+                cpu.bus.iwram[0x7FF9],
+                cpu.bus.iwram[0x7FFA],
+                cpu.bus.iwram[0x7FFB]
+            ])
+        );
         let pal_sum: u32 = cpu.bus.palette.iter().map(|&b| b as u32).sum();
-        for blk in 0..6 { 
-            let s: u64 = cpu.bus.vram[blk*0x4000..(blk+1)*0x4000].iter().map(|&b| b as u64).sum();
+        for blk in 0..6 {
+            let s: u64 = cpu.bus.vram[blk * 0x4000..(blk + 1) * 0x4000]
+                .iter()
+                .map(|&b| b as u64)
+                .sum();
             eprintln!("vram[{blk}] sum={s}");
         }
         eprintln!("palette sum={pal_sum}");
@@ -175,11 +206,11 @@ fn main() -> ExitCode {
         );
         std::fs::write("save.bin", &cpu.bus.save).unwrap();
         std::fs::write("vram.bin", &cpu.bus.vram).unwrap();
-        std::fs::write("oam.bin", &cpu.bus.oam).unwrap();
-        std::fs::write("io.bin", &cpu.bus.io).unwrap();
-        std::fs::write("pal.bin", &cpu.bus.palette).unwrap();
+        std::fs::write("oam.bin", cpu.bus.oam).unwrap();
+        std::fs::write("io.bin", cpu.bus.io).unwrap();
+        std::fs::write("pal.bin", cpu.bus.palette).unwrap();
         std::fs::write("ewram.bin", &cpu.bus.ewram).unwrap();
-        std::fs::write("pal.bin", &cpu.bus.palette).unwrap();
+        std::fs::write("pal.bin", cpu.bus.palette).unwrap();
         std::fs::write("ewram.bin", &cpu.bus.ewram).unwrap();
         return ExitCode::SUCCESS;
     }
@@ -189,7 +220,7 @@ fn main() -> ExitCode {
     let stream = cpal::default_host().default_output_device().map(|dev| {
         let config = cpal::StreamConfig {
             channels: 2,
-            sample_rate: 44100u32.into(),
+            sample_rate: 44100u32,
             buffer_size: cpal::BufferSize::Default,
         };
         let q = audio_queue.clone();
@@ -210,9 +241,8 @@ fn main() -> ExitCode {
             |e| eprintln!("audio error: {e}"),
             None,
         )
-        .map(|s| {
+        .inspect(|s| {
             s.play().ok();
-            s
         })
     });
     let audio_ok = matches!(&stream, Some(Ok(_)));
@@ -221,7 +251,10 @@ fn main() -> ExitCode {
         "gba",
         ppu::WIDTH,
         ppu::HEIGHT,
-        WindowOptions { scale: Scale::X4, ..Default::default() },
+        WindowOptions {
+            scale: Scale::X4,
+            ..Default::default()
+        },
     )
     .expect("failed to open window");
     window.set_target_fps(60);
@@ -242,10 +275,12 @@ fn main() -> ExitCode {
             }
         }
         if window.is_key_pressed(Key::F7, minifb::KeyRepeat::No) {
-            match std::fs::read(&state_path).map_err(|e| e.to_string()).and_then(|b| {
-                bincode::decode_from_slice::<cpu::Cpu, _>(&b, bincode::config::standard())
-                    .map_err(|e| e.to_string())
-            }) {
+            match std::fs::read(&state_path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| {
+                    bincode::decode_from_slice::<cpu::Cpu, _>(&b, bincode::config::standard())
+                        .map_err(|e| e.to_string())
+                }) {
                 Ok((loaded, _)) => {
                     cpu = loaded;
                     eprintln!("state loaded");
@@ -261,7 +296,13 @@ fn main() -> ExitCode {
         // holds ~100ms, so playback never starves and A/V stay locked to
         // the same clock. At most a few frames per display refresh.
         let target = 44100 * 2 / 10;
-        let max_frames = if paused { 0 } else if turbo { 8 } else { 4 };
+        let max_frames = if paused {
+            0
+        } else if turbo {
+            8
+        } else {
+            4
+        };
         for i in 0..max_frames {
             // Without audio output the queue never drains; fall back to one
             // frame per display refresh.
@@ -318,7 +359,7 @@ fn main() -> ExitCode {
             .expect("window update failed");
 
         frame_count += 1;
-        if frame_count % 60 == 0 && cpu.bus.save_dirty {
+        if frame_count.is_multiple_of(60) && cpu.bus.save_dirty {
             cpu.bus.save_dirty = false;
             let _ = std::fs::write(&save_path, &cpu.bus.save);
         }
