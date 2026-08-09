@@ -6,6 +6,8 @@ Game Boy Advance emulator written from scratch in Rust. Runs Pokémon FireRed, f
 
 No emulation libraries and no ported reference code: the ARM7TDMI core, the PPU, the DMA controller, the timers, the save hardware and the audio path were each built against the hardware documentation and test ROMs, one failing case at a time. No BIOS image is required; the BIOS calls games actually make are implemented in high-level Rust.
 
+![Pokémon FireRed running in this emulator, walking around Pallet Town](screenshots/firered-demo.gif)
+
 ![Pokémon FireRed title screen](screenshots/firered-title.png)
 
 ![Pokémon FireRed, Pallet Town overworld from a real save](screenshots/firered-pallet-town.png)
