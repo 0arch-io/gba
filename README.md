@@ -24,6 +24,8 @@ The methodology is reproducible from this repo. `tools/refprobe.c` links against
 
 On the standard suites, the CPU core passes the jsmolka `arm`, `thumb` and `memory` tests in full.
 
+[docs/differential-testing.md](docs/differential-testing.md) is a full writeup of the harness, the bisect method, the bugs it caught, and what differential testing cannot catch.
+
 ## Features
 
 - **ARM7TDMI CPU**: the complete ARM and Thumb instruction sets, mode banking, the SPSR/CPSR machinery, and interrupt dispatch.
