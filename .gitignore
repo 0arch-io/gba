@@ -30,3 +30,6 @@ ios/build/
 
 # The mGBA reference probe is a tracked tool, unlike scratch C files.
 !tools/refprobe.c
+
+# wasm-bindgen output for the browser demo, rebuilt by scripts/build-wasm.sh.
+web/pkg/

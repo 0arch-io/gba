@@ -5,11 +5,16 @@ edition = "2024"
 
 [lib]
 name = "gba"
-crate-type = ["staticlib", "rlib"]
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 bincode = { version = "2", features = ["derive"] }
 
-[target.'cfg(not(target_os = "ios"))'.dependencies]
+# Desktop frontend only: neither of these builds for iOS or for wasm32.
+[target.'cfg(all(not(target_os = "ios"), not(target_arch = "wasm32")))'.dependencies]
 cpal = "0.18.1"
 minifb = "0.28.0"
+
+# Browser frontend only.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"

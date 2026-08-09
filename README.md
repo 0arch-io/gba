@@ -4,6 +4,8 @@
 
 Game Boy Advance emulator written from scratch in Rust. Runs Pokémon FireRed, frame-identical to mGBA.
 
+**[Play it in your browser](https://0arch-io.github.io/gba/)**: the same Rust core compiled to WebAssembly. Drop in your own `.gba` file, or click "Run CPU test suite" to see the emulator work without one.
+
 No emulation libraries and no ported reference code: the ARM7TDMI core, the PPU, the DMA controller, the timers, the save hardware and the audio path were each built against the hardware documentation and test ROMs, one failing case at a time. No BIOS image is required; the BIOS calls games actually make are implemented in high-level Rust.
 
 ![Pokémon FireRed running in this emulator, walking around Pallet Town](screenshots/firered-demo.gif)
@@ -73,6 +75,8 @@ Battery saves are written to `<rom>.gba.sav` next to the ROM, sized to whatever 
 - `src/ppu.rs`: the scanline renderer and the LCD state machine.
 - `src/psg.rs`: the four legacy Game Boy sound channels.
 - `src/lib.rs`: the C FFI surface that the iOS app links against.
+- `src/wasm.rs`: the wasm-bindgen surface behind the browser demo, built by `scripts/build-wasm.sh` into `web/pkg/`.
+- `web/`: the browser frontend (canvas, keyboard, Web Audio worklet), published to GitHub Pages.
 - `ios/`: the SwiftUI frontend over that FFI.
 
 ## Verification and debugging tools

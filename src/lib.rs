@@ -15,6 +15,9 @@ pub mod cpu;
 pub mod ppu;
 pub mod psg;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 #[cfg(test)]
 mod save_tests;
 
@@ -47,7 +50,7 @@ pub extern "C" fn gba_destroy(h: *mut c_void) {
     }
 }
 
-fn cpi(pc: u32) -> u64 {
+pub(crate) fn cpi(pc: u32) -> u64 {
     match pc >> 24 {
         0x03 => 1,
         0x02 => 3,

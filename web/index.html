@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gba - Rust Game Boy Advance emulator</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>gba</h1>
+        <p class="sub">
+          A Game Boy Advance emulator written from scratch in Rust, compiled to
+          WebAssembly. The same core runs the native desktop build and the iOS
+          app, and it is frame-identical to mGBA on Pokemon FireRed.
+        </p>
+      </header>
+
+      <div class="screen-wrap">
+        <canvas id="screen" width="240" height="160"></canvas>
+        <div id="overlay" class="overlay">
+          <button id="start" type="button">Start</button>
+          <p>Audio needs a click before it can play.</p>
+        </div>
+      </div>
+
+      <div class="bar">
+        <span id="status">loading wasm</span>
+        <span class="actions">
+          <button id="demo" type="button">Run CPU test suite</button>
+          <label class="file">
+            <input id="rom" type="file" accept=".gba,.bin" />
+            <span>Load ROM</span>
+          </label>
+        </span>
+      </div>
+
+      <section class="keys">
+        <h2>Controls</h2>
+        <dl>
+          <div><dt>Z / X</dt><dd>A / B</dd></div>
+          <div><dt>Enter / Right Shift</dt><dd>Start / Select</dd></div>
+          <div><dt>Arrows</dt><dd>D-pad</dd></div>
+          <div><dt>Q / W</dt><dd>L / R</dd></div>
+        </dl>
+        <p class="note">
+          No ROM is bundled with this page, and none ever will be. Pick a
+          <code>.gba</code> file with the button above: it is read in the
+          browser and never uploaded anywhere. Battery saves are kept in your
+          browser's local storage, per cartridge.
+        </p>
+        <p class="note">
+          "Run CPU test suite" fetches jsmolka's MIT-licensed
+          <a href="https://github.com/jsmolka/gba-tests">arm.gba</a> straight
+          from its own repository and runs it, so you can see the emulator work
+          without supplying anything. Every ARM instruction test should report
+          as passed.
+        </p>
+        <p class="note">
+          Source:
+          <a href="https://github.com/0arch-io/gba">github.com/0arch-io/gba</a>
+        </p>
+      </section>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
