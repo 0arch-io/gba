@@ -6,7 +6,13 @@ Game Boy Advance emulator written from scratch in Rust. Runs Pokémon FireRed, f
 
 No emulation libraries and no ported reference code: the ARM7TDMI core, the PPU, the DMA controller, the timers, the save hardware and the audio path were each built against the hardware documentation and test ROMs, one failing case at a time. No BIOS image is required; the BIOS calls games actually make are implemented in high-level Rust.
 
+![Pokémon FireRed title screen](screenshots/firered-title.png)
+
+![Pokémon FireRed, Pallet Town overworld from a real save](screenshots/firered-pallet-town.png)
+
 ![Kirby title screen](screenshots/title.png) ![Kirby gameplay](screenshots/gameplay.png) ![jsmolka test suite passing](screenshots/tests.png)
+
+Screenshots are framebuffer dumps from this emulator (Pokémon FireRed is © Game Freak and Nintendo, Kirby: Nightmare in Dream Land is © HAL Laboratory and Nintendo; no ROMs are included or distributed).
 
 ## Accuracy
 
