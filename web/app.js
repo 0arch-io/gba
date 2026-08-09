@@ -117,12 +117,35 @@ function loadRom(bytes, name) {
 
 let sinceSave = 0;
 
-function frame() {
+// The GBA draws 16777216 / 280896 frames a second. requestAnimationFrame runs
+// at the display's refresh rate instead, which is 120Hz on a ProMotion screen
+// and would otherwise play everything at double speed, so emulated frames are
+// paced against the wall clock rather than against the callback.
+const FRAME_MS = 1000 * 280896 / 16777216;
+let owed = 0;
+let last = 0;
+let stepped = 0;
+
+function frame(now) {
   requestAnimationFrame(frame);
-  if (!emu || !running) return;
+  if (!emu || !running) {
+    last = now;
+    return;
+  }
+
+  const elapsed = last ? now - last : FRAME_MS;
+  last = now;
+  // Cap the backlog at four frames. A backgrounded tab stops getting callbacks
+  // entirely, and without this the first callback after it returns would try to
+  // emulate every missed frame at once and never catch up.
+  owed = Math.min(owed + elapsed / FRAME_MS, 4);
 
   emu.set_keys(pressed);
-  emu.step_frame();
+  while (owed >= 1) {
+    owed -= 1;
+    emu.step_frame();
+    stepped++;
+  }
   image.data.set(emu.framebuffer());
   ctx.putImageData(image, 0, 0);
 
@@ -164,6 +187,8 @@ async function main() {
   startBtn.addEventListener("click", async () => {
     if (emu) await startAudio(emu.sample_rate());
     overlay.classList.add("hidden");
+    owed = 0;
+    last = 0;
     running = true;
     status(romName ? `running ${romName}` : "pick a ROM to start");
   });
@@ -177,6 +202,10 @@ async function main() {
   });
 
   window.addEventListener("beforeunload", persistSave);
+  // Exposed so the pacing can be checked from the console: read it, wait a
+  // known number of seconds, read it again, and the difference should be about
+  // 59.7 emulated frames per second regardless of the display's refresh rate.
+  Object.defineProperty(window, "gbaFramesStepped", { get: () => stepped });
 }
 
 main().catch((err) => status(`failed to start: ${err}`));
