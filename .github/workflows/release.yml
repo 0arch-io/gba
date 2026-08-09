@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: gba-macos-arm64
+            archive: gba-macos-arm64.tar.gz
+          - os: ubuntu-latest
+            name: gba-linux-x86_64
+            archive: gba-linux-x86_64.tar.gz
+          - os: windows-latest
+            name: gba-windows-x86_64.exe
+            archive: gba-windows-x86_64.zip
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ALSA and X11 headers (cpal and minifb build dependencies)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libwayland-cursor0 libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --bin gba
+
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          strip target/release/gba
+          mv target/release/gba ${{ matrix.name }}
+          tar czf ${{ matrix.archive }} ${{ matrix.name }}
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mv target/release/gba.exe ${{ matrix.name }}
+          Compress-Archive -Path ${{ matrix.name }} -DestinationPath ${{ matrix.archive }}
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.archive }}

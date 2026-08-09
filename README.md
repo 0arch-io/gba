@@ -43,6 +43,10 @@ cargo build --release
 
 No ROMs are included in this repository, and none ever will be. The test ROMs used during development are [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests), which CI clones on every run.
 
+### Download
+
+Prebuilt binaries for macOS (Apple Silicon), Linux (x86_64), and Windows (x86_64) are attached to each tagged release on the [releases page](https://github.com/0arch-io/gba/releases). Download the archive for your platform, unpack it, and run the binary with a ROM path.
+
 Battery saves are written to `<rom>.gba.sav` next to the ROM, sized to whatever save chip the cartridge actually declares. Save states go to `<rom>.gba.state`.
 
 ## Controls
