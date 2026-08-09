@@ -103,5 +103,3 @@ These are honest trade-offs, documented rather than hidden.
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-Screenshots show Kirby: Nightmare in Dream Land running under this emulator. The game itself is copyright HAL Laboratory and Nintendo, and is not distributed here.
