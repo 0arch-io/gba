@@ -188,11 +188,27 @@ code {
   max-width: none;
 }
 
-.touch-on .player {
+.touch-on {
+  overflow: hidden;
+  height: 100dvh;
+}
+
+.touch-on main {
   height: 100dvh;
   display: flex;
   flex-direction: column;
+}
+
+.touch-on .player {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding-top: env(safe-area-inset-top);
+}
+
+.touch-on .keys {
+  display: none;
 }
 
 .touch-on .screen-wrap {
@@ -201,18 +217,11 @@ code {
   border-right: none;
 }
 
-.touch-on .bar,
-.touch-on .keys {
-  padding-left: max(20px, env(safe-area-inset-left));
-  padding-right: max(20px, env(safe-area-inset-right));
-}
-
-.touch-on .keys {
-  padding-bottom: 60px;
-}
-
 .touch-on .bar {
-  margin-top: 20px;
+  margin: 0;
+  padding: 10px max(16px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  border-top: 1px solid var(--line);
 }
 
 .touch {
@@ -377,7 +386,7 @@ code {
   }
 
   .touch-on .screen-wrap {
-    height: 100dvh;
+    height: 100%;
     width: auto;
     aspect-ratio: 240 / 160;
     margin: 0 auto;
